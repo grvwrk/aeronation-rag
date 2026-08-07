@@ -24,12 +24,12 @@ from llama_index.core.postprocessor import SimilarityPostprocessor
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.core.vector_stores import MetadataFilters, MetadataFilter
 from llama_index.llms.anthropic import Anthropic
-from llama_index.llms.groq.base import Groq
 from llama_index.llms.openai import OpenAI
 from llama_index.llms.ollama import Ollama
 from llama_index.core.llms import ChatMessage, MessageRole
 from llama_index.core.prompts import PromptTemplate
 from tenacity import retry, stop_after_attempt, wait_exponential
+from llama_index.llms.openai_like import OpenAILike
 
 warnings.filterwarnings("ignore")
 
@@ -244,7 +244,7 @@ class ModelManager:
     @retry(
         stop=stop_after_attempt(5), wait=wait_exponential(multiplier=1, min=4, max=60)
     )
-    def _load_llm_model(self) -> Union[OpenAI, Ollama, Anthropic, Groq]:
+    def _load_llm_model(self) -> Union[OpenAI, Ollama, Anthropic, OpenAILike]:
         """Load the LLM model with retry logic."""
         try:
             model_type = self._config["LLM_MODEL_TYPE"]
@@ -280,13 +280,18 @@ class ModelManager:
                     timeout=self._config["ANTHROPIC"]["REQUEST_TIMEOUT"],
                 )
             elif model_type == "GROQ":
-                return Groq(
+                return OpenAILike(
                     model=self._config["GROQ"]["MODEL_NAME"],
                     api_key=self._secret["GROQ_API_KEY"],
+                    additional_kwargs={"reasoning_effort": "low"},
+                    # Groq OpenAI-compatible endpoint
+                    api_base=self._config["GROQ"]["API_BASE"],
+                    is_chat_model=True,
                     temperature=self._config["GROQ"]["TEMPERATURE"],
                     max_tokens=self._config["GROQ"]["MAX_TOKENS"],
                     timeout=self._config["GROQ"]["REQUEST_TIMEOUT"],
-                    context_window=8000,  # match Groq's real TPM ceiling, not the model's 128K
+
+                    reuse_client=True,
                 )
             else:
                 raise ValueError(f"Invalid LLM model type: {model_type}")
@@ -303,7 +308,7 @@ class ModelManager:
         return ModelManager._embed_model
 
     @property
-    def llm_model(self) -> Union[OpenAI, Ollama, Anthropic, Groq]:
+    def llm_model(self) -> Union[OpenAI, Ollama, Anthropic, OpenAILike]:
         """Get the loaded LLM model."""
         if ModelManager._llm_model is None:
             ModelManager._llm_model = self._load_llm_model()

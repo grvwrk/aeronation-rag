@@ -1,0 +1,29 @@
+[project]
+name = "rag-api"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "boto3>=1.43.66",
+    "cohere>=5.21.1",
+    "fastapi>=0.141.1",
+    "fastembed>=0.8.0",
+    "llama-index-core>=0.14.23",
+    "llama-index-embeddings-huggingface>=0.7.0",
+    "llama-index-llms-anthropic>=0.11.10",
+    "llama-index-llms-ollama>=0.10.1",
+    "llama-index-llms-openai>=0.7.10",
+    "llama-index-llms-openai-like>=0.7.2",
+    "llama-index-postprocessor-cohere-rerank>=0.9.0",
+    "llama-index-vector-stores-qdrant>=0.8.8",
+    "nest-asyncio>=1.6.0",
+    "pydantic>=2.13.4",
+    "pypdf2>=3.0.1",
+    "pyyaml>=6.0.3",
+    "qdrant-client<1.16",
+    "tavily-python>=0.7.27",
+    "tenacity>=9.1.4",
+    "uvicorn>=0.52.1",
+    "watchtower>=3.4.0",
+]

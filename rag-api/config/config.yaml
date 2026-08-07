@@ -29,6 +29,7 @@ GROQ:
   MAX_TOKENS: 1200
   TEMPERATURE: 0.7
   REQUEST_TIMEOUT: 180.0
+  API_BASE: https://api.groq.com/openai/v1
 
 PDF_BASE_URL: https://aeronation-rag-test-log-and-chat-history.s3.ap-south-1.amazonaws.com/pdfs/
 S3_LOGS_BUCKET: aeronation-rag-test-log-and-chat-history

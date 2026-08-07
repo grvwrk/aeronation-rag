@@ -13,9 +13,9 @@ from pathlib import Path
 from botocore.exceptions import ClientError
 import watchtower
 from llama_index.llms.anthropic import Anthropic
-from llama_index.llms.groq.base import Groq
 from llama_index.llms.openai import OpenAI
 from llama_index.llms.ollama import Ollama
+from llama_index.llms.openai_like import OpenAILike
 from tenacity import retry, stop_after_attempt, wait_exponential
 from generate import Generate, StorageManager
 from secrets_manager import get_secret
@@ -229,12 +229,19 @@ class LLMManager:
                     timeout=config["ANTHROPIC"]["REQUEST_TIMEOUT"],
                 )
             elif model_type == "GROQ":
-                return Groq(
+                return OpenAILike(
                     model=config["GROQ"]["MODEL_NAME"],
                     api_key=secret["GROQ_API_KEY"],
+                
+                    # Groq OpenAI-compatible endpoint
+                    api_base=config["GROQ"]["API_BASE"],
+                
                     temperature=config["GROQ"]["TEMPERATURE"],
                     max_tokens=config["GROQ"]["MAX_TOKENS"],
                     timeout=config["GROQ"]["REQUEST_TIMEOUT"],
+                    additional_kwargs={"reasoning_effort": "low"},
+                    is_chat_model=True,
+                    reuse_client=True,
                 )
             else:
                 raise ValueError(f"Invalid LLM model type: {model_type}")
