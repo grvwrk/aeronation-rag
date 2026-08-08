@@ -25,6 +25,10 @@ from secrets_manager import get_secret
 
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
+
 
 # Constants
 CONFIG_PATH = Path("config/config.yaml")
@@ -507,7 +511,7 @@ async def get_answer(rag: RAG, background_tasks: BackgroundTasks) -> StreamingRe
 if __name__ == "__main__":
     import uvicorn
     import os 
-    
+
     port = int(os.environ.get("PORT", 8000))
 
     logger.info("Starting uvicorn server")
@@ -518,5 +522,7 @@ if __name__ == "__main__":
         log_level="info",
         reload=False,
         workers=1,
-        loop="asyncio"
+        loop="asyncio",
+        redoc_url=None,
+        openapi_url=None
     )
