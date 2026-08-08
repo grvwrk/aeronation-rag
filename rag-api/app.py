@@ -281,7 +281,13 @@ class AppManager:
 
         logger.info("Initializing application services")
         self._settings = Settings()
-        LogManager.setup_logging(self._settings.config, self._settings.secret)
+        try:
+            LogManager.setup_logging(self._settings.config, self._settings.secret)
+        except Exception as exc:
+            logger.warning(
+                "CloudWatch logging initialization failed; continuing without CloudWatch logging: %s",
+                exc,
+            )
         self._prompts = PromptManager.load_prompts(self._settings.config)
         self._llm = LLMManager.init_llm(self._settings.config, self._settings.secret)
         self._initialized = True
