@@ -34,7 +34,9 @@ PDF_BASE_URL: https://aeronation-rag-test-log-and-chat-history.s3.ap-south-1.ama
 S3_LOGS_BUCKET: aeronation-rag-test-log-and-chat-history
 S3_CHAT_HISTORY: chat_logs
 S3_PERSIST_BUCKET: aeronation-rag-test-log-and-chat-history
-S3_PERSIST_DIR: /home/ubuntu
+# Relative to the API working directory. This keeps local development
+# portable across Windows and Linux; production can mount this directory.
+S3_PERSIST_DIR: runtime
 
 AWS_REGION: ap-south-1
 SECRETS_MANAGER: aeronation/rag/test/api-keys
