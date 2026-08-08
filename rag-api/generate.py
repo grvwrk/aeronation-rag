@@ -475,9 +475,10 @@ class Generate:
             
             answer = ""
             logger.info("Retrieving relevant documents...")
-            retrieved_docs = self.query_engine.retrieve(
-                QueryBundle(query_str=self._refined_query)
-            )
+            query_bundle = QueryBundle(query_str=self._refined_query)
+            retrieved_docs = self.query_engine.retrieve(query_bundle)
+            if len(retrieved_docs) > 3:
+                retrieved_docs = retrieved_docs[:3]
 
             logger.info(f"Retrieved documents: {retrieved_docs}")
             logger.info(

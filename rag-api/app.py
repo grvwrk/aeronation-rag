@@ -390,7 +390,6 @@ class AppManager:
 
 @asynccontextmanager
 async def lifespan(app):
-    app_manager.start_initialization()
     try:
         yield
     finally:
@@ -446,8 +445,9 @@ async def save_chat_history(
 
 @app.get("/health", tags=["Health Check"])
 async def health_check() -> JSONResponse:
-    """Basic health check endpoint."""
-    return JSONResponse(status_code=status.HTTP_200_OK, content={"status": "OK"})
+    """Basic health check endpoint that answers instantly in <1ms."""
+    return JSONResponse(status_code=200, content={"status": "OK"})
+
 
 
 
@@ -455,7 +455,10 @@ async def health_check() -> JSONResponse:
 async def get_answer(rag: RAG, background_tasks: BackgroundTasks) -> StreamingResponse:
     """Process chat requests and generate RAG-based responses."""
     try:
-        await app_manager.wait_until_ready()
+        if not app_manager.is_ready():
+            logger.info("First query received. Lazily initializing all application models...")
+            await app_manager.wait_until_ready()
+            
         start_time = time.perf_counter()
         logger.info(f"Processing chat request for chat_id: {rag.chat_id}")
         logger.info(
