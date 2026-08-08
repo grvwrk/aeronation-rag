@@ -23,6 +23,8 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from generate import Generate, StorageManager
 from secrets_manager import get_secret
 
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
 
 # Constants
 CONFIG_PATH = Path("config/config.yaml")

@@ -245,7 +245,7 @@ class ModelManager:
             return FastEmbedEmbedding(
                 model_name=model_name,
                 max_length=max_length,
-                cache_dir="/tmp/fastembed_cache" # Render safe temp directory
+                cache_dir="./.fastembed_cache" # Render safe temp directory
             )
         except Exception as e:
             logger.error(f"Error loading embedding model: {e}")
