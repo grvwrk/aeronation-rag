@@ -1,4 +1,4 @@
-HF_EMBED: mixedbread-ai/mxbai-embed-large-v1
+HF_EMBED: sentence-transformers/paraphrase-MiniLM-L3-v2
 COHERE_RERANKER: rerank-v4.0-fast
 LLM_MODEL_TYPE: GROQ
 PROMPT_DIR: prompts
