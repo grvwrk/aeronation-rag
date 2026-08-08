@@ -42,7 +42,7 @@ class PromptConfig(BaseModel):
 class RAG(BaseModel):
     """Data model for RAG API requests with validation."""
 
-    chat_id: str = Field(default="zpf87cm9", description="Chat ID")
+    chat_id: str = Field(default="test", description="Chat ID")
     query: str = Field(..., description="User query")
     file_name: Optional[str] = Field(default="", description="File name")
     collection_name: Optional[str] = Field(
