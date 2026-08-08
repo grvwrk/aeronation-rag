@@ -12,6 +12,21 @@ class AppManagerStartupTests(unittest.TestCase):
             self.assertIsNone(manager._settings)
             settings_cls.assert_not_called()
 
+    def test_initialize_continues_when_cloudwatch_setup_fails(self):
+        settings = type("Settings", (), {"config": {}, "secret": {}})()
+
+        with patch("app.Settings", return_value=settings), patch(
+            "app.LogManager.setup_logging", side_effect=RuntimeError("cloudwatch unavailable")
+        ), patch("app.PromptManager.load_prompts", return_value="prompts"), patch(
+            "app.LLMManager.init_llm", return_value="llm"
+        ):
+            manager = app.AppManager()
+            manager.initialize()
+
+            self.assertTrue(manager._initialized)
+            self.assertEqual(manager._prompts, "prompts")
+            self.assertEqual(manager._llm, "llm")
+
 
 if __name__ == "__main__":
     unittest.main()
