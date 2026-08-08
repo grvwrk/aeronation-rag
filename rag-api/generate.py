@@ -239,13 +239,18 @@ class ModelManager:
             # We map your config model string cleanly into FastEmbed
             model_name = self._config["HF_EMBED"] 
             max_length = self._config.get("HF_EMBED_MAX_LENGTH", 512)
-            # Example: "sentence-transformers/paraphrase-MiniLM-L3-v2"
-            
+
+            from pathlib import Path
+            repo_root = Path(__file__).resolve().parent
+
+            abs_cache_dir = str(repo_root / ".fastembed_cache")
+            logger.info(f"Loading local cached embedding model from: {abs_cache_dir}")
+
             logger.info(f"Loading lightweight ONNX embedding model: {model_name}")
             return FastEmbedEmbedding(
                 model_name=model_name,
                 max_length=max_length,
-                cache_dir="./.fastembed_cache" # Render safe temp directory
+                cache_dir=abs_cache_dir # Render safe temp directory
             )
         except Exception as e:
             logger.error(f"Error loading embedding model: {e}")
@@ -475,9 +480,10 @@ class Generate:
             
             answer = ""
             logger.info("Retrieving relevant documents...")
-            retrieved_docs = self.query_engine.retrieve(
-                QueryBundle(query_str=self._refined_query)
-            )
+            query_bundle = QueryBundle(query_str=self._refined_query)
+            retrieved_docs = self.query_engine.retrieve(query_bundle)
+            if len(retrieved_docs) > 3:
+                retrieved_docs = retrieved_docs[:3]
 
             logger.info(f"Retrieved documents: {retrieved_docs}")
             logger.info(
