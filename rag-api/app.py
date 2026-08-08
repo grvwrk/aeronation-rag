@@ -10,6 +10,7 @@ import time
 import yaml
 import atexit
 import socket
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from botocore.exceptions import ClientError
@@ -21,6 +22,7 @@ from llama_index.llms.openai_like import OpenAILike
 from tenacity import retry, stop_after_attempt, wait_exponential
 from generate import Generate, StorageManager
 from secrets_manager import get_secret
+
 
 # Constants
 CONFIG_PATH = Path("config/config.yaml")
@@ -503,11 +505,13 @@ async def get_answer(rag: RAG, background_tasks: BackgroundTasks) -> StreamingRe
 if __name__ == "__main__":
     import uvicorn
 
+    port = int(os.environ.get("PORT", 8000))
+
     logger.info("Starting uvicorn server")
     uvicorn.run(
         "app:app",
         host="0.0.0.0",
-        port=8000,
+        port=port,
         log_level="info",
         reload=False,
         workers=1,

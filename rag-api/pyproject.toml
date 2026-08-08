@@ -10,6 +10,7 @@ dependencies = [
     "fastapi>=0.141.1",
     "fastembed>=0.8.0",
     "llama-index-core>=0.14.23",
+    "llama-index-embeddings-fastembed>=0.1.0",
     "llama-index-embeddings-huggingface>=0.7.0",
     "llama-index-llms-anthropic>=0.11.10",
     "llama-index-llms-ollama>=0.10.1",
