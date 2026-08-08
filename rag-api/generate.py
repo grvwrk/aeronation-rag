@@ -406,7 +406,15 @@ class Generate:
             return index
         except Exception as e:
             logger.error(f"Error setting up storage context: {e}")
-            raise
+            raise 
+    
+    def _prepare_query(self) -> str:
+        """Prepare the refined query with chat history."""
+        # 8 SPACES INDENTATION FOR THE CODE INSIDE IT
+        if self._storage_manager.chat_hist is not None:
+            return f"<|CHAT HISTORY|>: {self._storage_manager.chat_hist}\n\n<|QUERY|>: {self._query}"
+        return f"<|QUERY|>: {self._query}"
+
 
 
     def _prepare_metadata_filters(
