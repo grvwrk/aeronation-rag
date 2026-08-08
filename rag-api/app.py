@@ -11,6 +11,7 @@ import yaml
 import atexit
 import socket
 import os
+import gc
 from contextlib import asynccontextmanager
 from pathlib import Path
 from botocore.exceptions import ClientError
@@ -22,6 +23,12 @@ from llama_index.llms.openai_like import OpenAILike
 from tenacity import retry, stop_after_attempt, wait_exponential
 from generate import Generate, StorageManager
 from secrets_manager import get_secret
+
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
 
 # Constants
@@ -354,6 +361,8 @@ class AppManager:
                 version="1.0",
                 description="API for Aeronation RAG system",
                 lifespan=lifespan,
+                redoc_url=None,
+                openapi_url=None
             )
 
             AppManager._app.add_middleware(
@@ -500,10 +509,23 @@ async def get_answer(rag: RAG, background_tasks: BackgroundTasks) -> StreamingRe
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)
         )
+    finally:  
+        logger.info("Executing post-query memory sweep...")
+        
+        # Explicitly delete query generation object handles to release context
+        if 'generate_obj' in locals():
+            del generate_obj
+        if 's3_manager' in locals():
+            del s3_manager
+            
+        # Forcibly collect untracked data loops and clear memory overhead
+        gc.collect() 
+        logger.info("Memory sweep complete.")
 
 
 if __name__ == "__main__":
     import uvicorn
+    import os 
 
     port = int(os.environ.get("PORT", 8000))
 
@@ -515,4 +537,5 @@ if __name__ == "__main__":
         log_level="info",
         reload=False,
         workers=1,
+        loop="asyncio"
     )

@@ -245,7 +245,7 @@ class ModelManager:
             return FastEmbedEmbedding(
                 model_name=model_name,
                 max_length=max_length,
-                cache_dir="/tmp/fastembed_cache" # Render safe temp directory
+                cache_dir="./.fastembed_cache" # Render safe temp directory
             )
         except Exception as e:
             logger.error(f"Error loading embedding model: {e}")
@@ -329,6 +329,10 @@ class ModelManager:
 class Generate:
     """Main class for generating answers to user queries."""
 
+    # 1. Add class-level caching fields at the very top of the class
+    _qdrant_client = None
+    _async_qdrant_client = None
+
     def __init__(
         self,
         config: Dict[str, Any],
@@ -340,6 +344,7 @@ class Generate:
         s3_manager: StorageManager,
         metadata: Dict[str, Any] = {},
     ):
+        # ... keep all existing __init__ assignments completely the same ...
         self._config = config
         self._secret = secret
         self._query = query
@@ -366,30 +371,33 @@ class Generate:
         metadata_filters = self._prepare_metadata_filters(metadata)
         self._init_query_engine(index, metadata_filters)
 
-    def _prepare_query(self) -> str:
-        """Prepare the refined query with chat history."""
-        if self._storage_manager.chat_hist is not None:
-            return f"<|CHAT HISTORY|>: {self._storage_manager.chat_hist}\n\n<|QUERY|>: {self._query}"
-        return f"<|QUERY|>: {self._query}"
-
     def _setup_storage_context(self, collection_name: str) -> StorageContext:
-        """Setup storage context with Qdrant vector store."""
+        """Setup storage context with cached Qdrant vector store."""
         try:
-            client = qdrant_client.QdrantClient(
-                url=self._secret["QDRANT_URL"], api_key=self._secret["QDRANT_API_KEY"]
-            )
+            # 2. Check if the clients have already been instantiated globally
+            if Generate._qdrant_client is None:
+                logger.info("Initializing persistent Qdrant synchronous client...")
+                Generate._qdrant_client = qdrant_client.QdrantClient(
+                    url=self._secret["QDRANT_URL"], 
+                    api_key=self._secret["QDRANT_API_KEY"]
+                )
 
-            aclient = qdrant_client.AsyncQdrantClient(
-                url=self._secret["QDRANT_URL"], api_key=self._secret["QDRANT_API_KEY"]
-            )
+            if Generate._async_qdrant_client is None:
+                logger.info("Initializing persistent Qdrant asynchronous client...")
+                Generate._async_qdrant_client = qdrant_client.AsyncQdrantClient(
+                    url=self._secret["QDRANT_URL"], 
+                    api_key=self._secret["QDRANT_API_KEY"]
+                )
 
+            # 3. Pass the shared static instances directly into your Vector Store
             vector_store = QdrantVectorStore(
-                client=client,
-                aclient=aclient,
+                client=Generate._qdrant_client,
+                aclient=Generate._async_qdrant_client,
                 collection_name=collection_name,
                 enable_hybrid=self._config["QDRANT_ENABLE_HYBRID"],
                 fastembed_sparse_model=self._config["FASTEMBED_SPARSE_MODEL"],
                 prefer_grpc=False,
+                batch_size=16
             )
 
             storage_context = StorageContext.from_defaults(
@@ -399,7 +407,16 @@ class Generate:
             return index
         except Exception as e:
             logger.error(f"Error setting up storage context: {e}")
-            raise
+            raise 
+    
+    def _prepare_query(self) -> str:
+        """Prepare the refined query with chat history."""
+        # 8 SPACES INDENTATION FOR THE CODE INSIDE IT
+        if self._storage_manager.chat_hist is not None:
+            return f"<|CHAT HISTORY|>: {self._storage_manager.chat_hist}\n\n<|QUERY|>: {self._query}"
+        return f"<|QUERY|>: {self._query}"
+
+
 
     def _prepare_metadata_filters(
         self, metadata: Dict[str, Any]

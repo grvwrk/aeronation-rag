@@ -1,4 +1,4 @@
-HF_EMBED: sentence-transformers/paraphrase-MiniLM-L3-v2
+HF_EMBED: "sentence-transformers/all-MiniLM-L6-v2"
 HF_EMBED_MAX_LENGTH: 512
 
 COHERE_RERANKER: rerank-v4.0-fast
@@ -45,7 +45,7 @@ CLOUDWATCH_LOG_GROUP: altgan-log-group
 CLOUDWATCH_LOG_STREAM: altgan-log-stream
 
 QDRANT_ENABLE_HYBRID: True
-FASTEMBED_SPARSE_MODEL: Qdrant/bm42-all-minilm-l6-v2-attentions
+FASTEMBED_SPARSE_MODEL: "Qdrant/bm42-all-minilm-l6-v2-attentions"
 RAG_SIMILARITY_CUTOFF: 0.70
 RAG_SIMILARITY_TOP_K: 1
 RAG_RERANKED_TOP_N: 1
