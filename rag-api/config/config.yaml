@@ -1,4 +1,4 @@
-HF_EMBED: sentence-transformers/paraphrase-MiniLM-L3-v2
+HF_EMBED: "sentence-transformers/all-MiniLM-L6-v2"
 HF_EMBED_MAX_LENGTH: 512
 
 COHERE_RERANKER: rerank-v4.0-fast
