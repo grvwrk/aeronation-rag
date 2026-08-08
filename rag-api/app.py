@@ -9,6 +9,7 @@ import time
 import yaml
 import atexit
 import socket
+from contextlib import asynccontextmanager
 from pathlib import Path
 from botocore.exceptions import ClientError
 import watchtower
@@ -71,8 +72,8 @@ class RAG(BaseModel):
                 status_code=status.HTTP_403_FORBIDDEN, detail="Query cannot be empty."
             )
         elif (
-            llm.complete(
-                prompts.profanity_filter.format(query=value), max_tokens=32
+            app_manager.llm.complete(
+                app_manager.prompts.profanity_filter.format(query=value), max_tokens=32
             ).text.strip()
             == "True"
         ):
@@ -265,17 +266,31 @@ class AppManager:
     _llm = None
     _prompts = None
     _app = None
+    _initialized = False
 
     def __init__(self):
-        if AppManager._settings is None:
-            AppManager._settings = Settings()
-            LogManager.setup_logging(
-                AppManager._settings.config, AppManager._settings.secret
-            )
+        self._settings = None
+        self._llm = None
+        self._prompts = None
+        self._app = None
+        self._initialized = False
+
+    def initialize(self) -> None:
+        if self._initialized:
+            return
+
+        logger.info("Initializing application services")
+        self._settings = Settings()
+        LogManager.setup_logging(self._settings.config, self._settings.secret)
+        self._prompts = PromptManager.load_prompts(self._settings.config)
+        self._llm = LLMManager.init_llm(self._settings.config, self._settings.secret)
+        self._initialized = True
 
     @property
     def settings(self):
-        return AppManager._settings
+        if self._settings is None:
+            self.initialize()
+        return self._settings
 
     @property
     def app(self):
@@ -286,6 +301,7 @@ class AppManager:
                 title="Aeronation API",
                 version="1.0",
                 description="API for Aeronation RAG system",
+                lifespan=lifespan,
             )
 
             AppManager._app.add_middleware(
@@ -300,28 +316,28 @@ class AppManager:
 
     @property
     def prompts(self):
-        if AppManager._prompts is None:
-            AppManager._prompts = PromptManager.load_prompts(
-                AppManager._settings.config
-            )
-
-        return AppManager._prompts
+        if self._prompts is None:
+            self.initialize()
+        return self._prompts
 
     @property
     def llm(self):
-        if AppManager._llm is None:
-            AppManager._llm = LLMManager.init_llm(
-                AppManager._settings.config, AppManager._settings.secret
-            )
+        if self._llm is None:
+            self.initialize()
+        return self._llm
 
-        return AppManager._llm
+
+@asynccontextmanager
+async def lifespan(app):
+    app_manager.initialize()
+    try:
+        yield
+    finally:
+        logger.info("Shutting down application")
 
 
 app_manager = AppManager()
-settings = app_manager.settings
 app = app_manager.app
-prompts = app_manager.prompts
-llm = app_manager.llm
 
 
 async def save_chat_history(
@@ -336,8 +352,8 @@ async def save_chat_history(
 
         # Generate chat summary
         logger.debug("Generating chat summary")
-        summarized_hist = llm.complete(
-            prompts.history_summarizer.format(chat_history=chat_hist), max_tokens=256
+        summarized_hist = app_manager.llm.complete(
+            app_manager.prompts.history_summarizer.format(chat_history=chat_hist), max_tokens=256
         ).text.strip()
 
         # Save to S3
@@ -372,9 +388,6 @@ async def health_check() -> JSONResponse:
     return JSONResponse(status_code=status.HTTP_200_OK, content={"status": "OK"})
 
 
-logger.info("Starting API server")
-logger.info(f"Server started in {time.perf_counter() - start_time:.2f} seconds")
-
 
 @app.post("/v1/chat", tags=["Chat API"])
 async def get_answer(rag: RAG, background_tasks: BackgroundTasks) -> StreamingResponse:
@@ -387,8 +400,8 @@ async def get_answer(rag: RAG, background_tasks: BackgroundTasks) -> StreamingRe
         )
 
         # Rewrite query
-        rag.query = llm.complete(
-            prompts.rephrased_query.format(query=rag.query), max_tokens=64
+        rag.query = app_manager.llm.complete(
+            app_manager.prompts.rephrased_query.format(query=rag.query), max_tokens=64
         ).text.strip()
         logger.info(f"Updated Query: {rag.query}")
 
@@ -399,11 +412,11 @@ async def get_answer(rag: RAG, background_tasks: BackgroundTasks) -> StreamingRe
 
         # Initialize storage manager and response generator
         logger.debug("Initializing response generator")
-        s3_manager = StorageManager(settings.config, settings.secret)
+        s3_manager = StorageManager(app_manager.settings.config, app_manager.settings.secret)
 
         generate_obj = Generate(
-            config=settings.config,
-            secret=settings.secret,
+            config=app_manager.settings.config,
+            secret=app_manager.settings.secret,
             chat_id=rag.chat_id,
             query=rag.query,
             persist_dir=rag.persist_dir,
@@ -415,7 +428,7 @@ async def get_answer(rag: RAG, background_tasks: BackgroundTasks) -> StreamingRe
         # Schedule chat history summarization
         logger.debug("Scheduling chat history summarization")
         background_tasks.add_task(
-            save_chat_history, rag.chat_id, s3_manager.chat_hist, settings.config
+            save_chat_history, rag.chat_id, s3_manager.chat_hist, app_manager.settings.config
         )
 
         # Generate streaming response
