@@ -458,7 +458,7 @@ async def get_answer(rag: RAG, background_tasks: BackgroundTasks) -> StreamingRe
         if not app_manager.is_ready():
             logger.info("First query received. Lazily initializing all application models...")
             await app_manager.wait_until_ready()
-            
+
         start_time = time.perf_counter()
         logger.info(f"Processing chat request for chat_id: {rag.chat_id}")
         logger.info(
@@ -529,6 +529,9 @@ async def get_answer(rag: RAG, background_tasks: BackgroundTasks) -> StreamingRe
 if __name__ == "__main__":
     import uvicorn
     import os 
+
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 
     port = int(os.environ.get("PORT", 8000))
 
