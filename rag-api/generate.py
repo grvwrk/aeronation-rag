@@ -21,7 +21,8 @@ from llama_index.core.query_engine import CitationQueryEngine
 from llama_index.vector_stores.qdrant import QdrantVectorStore
 from llama_index.postprocessor.cohere_rerank import CohereRerank
 from llama_index.core.postprocessor import SimilarityPostprocessor
-from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+# from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+from llama_index.embeddings.fastembed import FastEmbedEmbedding
 from llama_index.core.vector_stores import MetadataFilters, MetadataFilter
 from llama_index.llms.anthropic import Anthropic
 from llama_index.llms.openai import OpenAI
@@ -232,14 +233,24 @@ class ModelManager:
         self._secret = secret
         logger.info("Initializing ModelManager...")
 
-    def _load_embed_model(self) -> HuggingFaceEmbedding:
-        """Load the embedding model."""
+    def _load_embed_model(self) -> FastEmbedEmbedding:
+        """Load the lightweight fastembed model."""
         try:
-            logger.info(f"Loading embedding model: {self._config['HF_EMBED']}")
-            return HuggingFaceEmbedding(model_name=self._config["HF_EMBED"])
+            # We map your config model string cleanly into FastEmbed
+            model_name = self._config["HF_EMBED"] 
+            max_length = self._config.get("HF_EMBED_MAX_LENGTH", 512)
+            # Example: "sentence-transformers/paraphrase-MiniLM-L3-v2"
+            
+            logger.info(f"Loading lightweight ONNX embedding model: {model_name}")
+            return FastEmbedEmbedding(
+                model_name=model_name,
+                max_length=max_length,
+                cache_dir="/tmp/fastembed_cache" # Render safe temp directory
+            )
         except Exception as e:
             logger.error(f"Error loading embedding model: {e}")
             raise
+
 
     @retry(
         stop=stop_after_attempt(5), wait=wait_exponential(multiplier=1, min=4, max=60)
@@ -301,7 +312,7 @@ class ModelManager:
             raise
 
     @property
-    def embed_model(self) -> HuggingFaceEmbedding:
+    def embed_model(self) -> FastEmbedEmbedding:
         """Get the loaded embedding model."""
         if ModelManager._embed_model is None:
             ModelManager._embed_model = self._load_embed_model()
