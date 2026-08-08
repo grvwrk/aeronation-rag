@@ -361,6 +361,8 @@ class AppManager:
                 version="1.0",
                 description="API for Aeronation RAG system",
                 lifespan=lifespan,
+                redoc_url=None,
+                openapi_url=None
             )
 
             AppManager._app.add_middleware(
@@ -535,7 +537,5 @@ if __name__ == "__main__":
         log_level="info",
         reload=False,
         workers=1,
-        loop="asyncio",
-        redoc_url=None,
-        openapi_url=None
+        loop="asyncio"
     )
