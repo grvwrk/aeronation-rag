@@ -11,6 +11,7 @@ import yaml
 import atexit
 import socket
 import os
+import gc
 from contextlib import asynccontextmanager
 from pathlib import Path
 from botocore.exceptions import ClientError
@@ -506,6 +507,18 @@ async def get_answer(rag: RAG, background_tasks: BackgroundTasks) -> StreamingRe
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)
         )
+    finally:  
+        logger.info("Executing post-query memory sweep...")
+        
+        # Explicitly delete query generation object handles to release context
+        if 'generate_obj' in locals():
+            del generate_obj
+        if 's3_manager' in locals():
+            del s3_manager
+            
+        # Forcibly collect untracked data loops and clear memory overhead
+        gc.collect() 
+        logger.info("Memory sweep complete.")
 
 
 if __name__ == "__main__":

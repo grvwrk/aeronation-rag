@@ -397,6 +397,7 @@ class Generate:
                 enable_hybrid=self._config["QDRANT_ENABLE_HYBRID"],
                 fastembed_sparse_model=self._config["FASTEMBED_SPARSE_MODEL"],
                 prefer_grpc=False,
+                batch_size=16
             )
 
             storage_context = StorageContext.from_defaults(
