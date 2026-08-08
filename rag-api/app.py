@@ -506,7 +506,8 @@ async def get_answer(rag: RAG, background_tasks: BackgroundTasks) -> StreamingRe
 
 if __name__ == "__main__":
     import uvicorn
-
+    import os 
+    
     port = int(os.environ.get("PORT", 8000))
 
     logger.info("Starting uvicorn server")
@@ -517,4 +518,5 @@ if __name__ == "__main__":
         log_level="info",
         reload=False,
         workers=1,
+        loop="asyncio"
     )
