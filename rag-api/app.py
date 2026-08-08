@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional, Dict, Any
+import asyncio
 import boto3
 import logging
 import time
@@ -71,7 +72,7 @@ class RAG(BaseModel):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN, detail="Query cannot be empty."
             )
-        elif (
+        elif app_manager.is_ready() and (
             app_manager.llm.complete(
                 app_manager.prompts.profanity_filter.format(query=value), max_tokens=32
             ).text.strip()
@@ -267,6 +268,9 @@ class AppManager:
     _prompts = None
     _app = None
     _initialized = False
+    _startup_task = None
+    _startup_error = None
+    _startup_event = None
 
     def __init__(self):
         self._settings = None
@@ -274,23 +278,63 @@ class AppManager:
         self._prompts = None
         self._app = None
         self._initialized = False
+        self._startup_task = None
+        self._startup_error = None
+        self._startup_event = asyncio.Event()
+
+    def is_ready(self) -> bool:
+        return self._initialized
+
+    def start_initialization(self) -> None:
+        if self._initialized or self._startup_task is not None:
+            return
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(self._initialize_async())
+            return
+
+        self._startup_task = loop.create_task(self._initialize_async())
+
+    async def wait_until_ready(self) -> None:
+        if self._initialized:
+            return
+        if self._startup_task is None:
+            self.start_initialization()
+        await self._startup_event.wait()
+        if self._startup_error is not None:
+            raise self._startup_error
+
+    async def _initialize_async(self) -> None:
+        try:
+            logger.info("Initializing application services")
+            self._settings = Settings()
+            try:
+                LogManager.setup_logging(self._settings.config, self._settings.secret)
+            except Exception as exc:
+                logger.warning(
+                    "CloudWatch logging initialization failed; continuing without CloudWatch logging: %s",
+                    exc,
+                )
+            self._prompts = await asyncio.to_thread(
+                PromptManager.load_prompts, self._settings.config
+            )
+            self._llm = await asyncio.to_thread(
+                LLMManager.init_llm, self._settings.config, self._settings.secret
+            )
+            self._initialized = True
+        except Exception as exc:
+            logger.exception("Application initialization failed: %s", exc)
+            self._startup_error = exc
+        finally:
+            self._startup_event.set()
 
     def initialize(self) -> None:
         if self._initialized:
             return
-
-        logger.info("Initializing application services")
-        self._settings = Settings()
-        try:
-            LogManager.setup_logging(self._settings.config, self._settings.secret)
-        except Exception as exc:
-            logger.warning(
-                "CloudWatch logging initialization failed; continuing without CloudWatch logging: %s",
-                exc,
-            )
-        self._prompts = PromptManager.load_prompts(self._settings.config)
-        self._llm = LLMManager.init_llm(self._settings.config, self._settings.secret)
-        self._initialized = True
+        if self._startup_task is None:
+            self.start_initialization()
 
     @property
     def settings(self):
@@ -335,7 +379,7 @@ class AppManager:
 
 @asynccontextmanager
 async def lifespan(app):
-    app_manager.initialize()
+    app_manager.start_initialization()
     try:
         yield
     finally:
@@ -351,6 +395,7 @@ async def save_chat_history(
 ) -> None:
     """Background task for chat history summarization and saving to S3."""
     try:
+        await app_manager.wait_until_ready()
         start_time = time.perf_counter()
         logger.info(f"Starting chat history summarization for chat {chat_id}")
 
@@ -399,6 +444,7 @@ async def health_check() -> JSONResponse:
 async def get_answer(rag: RAG, background_tasks: BackgroundTasks) -> StreamingResponse:
     """Process chat requests and generate RAG-based responses."""
     try:
+        await app_manager.wait_until_ready()
         start_time = time.perf_counter()
         logger.info(f"Processing chat request for chat_id: {rag.chat_id}")
         logger.info(
