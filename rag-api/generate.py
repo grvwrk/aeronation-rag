@@ -241,7 +241,7 @@ class ModelManager:
             max_length = self._config.get("HF_EMBED_MAX_LENGTH", 512)
 
             from pathlib import Path
-            repo_root = Path(__file__).resolve().parents
+            repo_root = Path(__file__).resolve().parent
 
             abs_cache_dir = str(repo_root / ".fastembed_cache")
             logger.info(f"Loading local cached embedding model from: {abs_cache_dir}")
