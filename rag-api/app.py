@@ -144,27 +144,37 @@ class LogManager:
                 region_name=config["AWS_REGION"],
             )
 
-            # Get EC2 instance information if available
+            # Determine a CloudWatch stream name. Prefer EC2 instance IDs when
+            # available, but fall back to the hostname for Render and other
+            # non-EC2 environments.
+            stream_name = socket.gethostname()
             logger.debug("Retrieving EC2 instance ID")
-            ec2_client = boto3.Session().resource(
-                "ec2", region_name=config["AWS_REGION"]
-            )
             try:
-                describe_result = ec2_client.meta.client.describe_instances()
+                ec2_client = boto3.client(
+                    "ec2",
+                    region_name=config["AWS_REGION"],
+                    aws_access_key_id=secret["AWS_ACCESS_KEY_ID"],
+                    aws_secret_access_key=secret["AWS_SECRET_ACCESS_KEY"],
+                )
+                describe_result = ec2_client.describe_instances()
                 reservations = describe_result.get("Reservations", [])
-                if not reservations or not reservations[0].get("Instances"):
-                    raise ValueError("No EC2 instances found")
-                instance_id = reservations[0]["Instances"][0]["InstanceId"]
+                for reservation in reservations:
+                    for instance in reservation.get("Instances", []):
+                        instance_id = instance.get("InstanceId")
+                        if instance_id:
+                            stream_name = instance_id
+                            break
+                    if stream_name != socket.gethostname():
+                        break
             except Exception as e:
                 logger.warning(
                     f"Could not determine EC2 instance ID, using hostname fallback: {e}"
                 )
-                instance_id = socket.gethostname()
 
             # Configure CloudWatch handler
             cloudwatch_handler = watchtower.CloudWatchLogHandler(
                 log_group=config["CLOUDWATCH_LOG_GROUP"],
-                stream_name=instance_id,
+                stream_name=stream_name,
                 boto3_client=cloudwatch_client,
                 use_queues=False,
             )
@@ -179,7 +189,7 @@ class LogManager:
             # Ensure logs are flushed on shutdown
             atexit.register(lambda: cloudwatch_handler.flush())
 
-            logger.info(f"CloudWatch logging setup complete for instance {instance_id}")
+            logger.info(f"CloudWatch logging setup complete for stream {stream_name}")
 
         except Exception as e:
             logger.critical(f"Failed to setup CloudWatch logging: {e}")
