@@ -108,39 +108,6 @@ def get_s3():
     return _s3_cache
 
 
-# --------------------------------------------------------------------------- #
-# Query pre-processing (ported from the deleted /v1/chat handler in app.py)
-# --------------------------------------------------------------------------- #
-
-def check_query(query: str) -> None:
-    """Raise ContentRejected if the profanity filter flags the query."""
-    try:
-        verdict = get_llm().complete(
-            load_prompt("profanity_filter.prompt").format(query=query), max_tokens=32
-        ).text.strip()
-    except Exception as exc:
-        # A filter outage should not take the endpoint down. Log and allow.
-        logger.error("Profanity filter failed, allowing query through: %s", exc, exc_info=True)
-        return
-
-    if verdict.lower().startswith("true"):
-        logger.warning("Query rejected by profanity filter: %r", query[:120])
-        raise ContentRejected("Sorry, I cannot answer that query.")
-
-
-def rephrase(query: str) -> str:
-    """Rewrite the query for retrieval. Falls back to the original on failure."""
-    try:
-        rewritten = get_llm().complete(
-            load_prompt("rephrased_query.prompt").format(query=query), max_tokens=64
-        ).text.strip()
-        if rewritten:
-            logger.info("Rephrased query: %r -> %r", query[:80], rewritten[:80])
-            return rewritten
-    except Exception as exc:
-        logger.error("Query rephrasing failed, using original: %s", exc, exc_info=True)
-    return query
-
 
 def _build_generator(query: str, chat_id: str, collection_name: str):
     """Construct the existing RAG generator. Returns (generator, storage_manager)."""
@@ -187,28 +154,30 @@ def _save_chat_history(chat_id: str, storage_manager) -> None:
 # ask
 # --------------------------------------------------------------------------- #
 
-def answer_question(
-    query: str, chat_id: str, collection_name: str
-) -> Tuple[str, List[Dict[str, Any]]]:
-    """Return the completed answer and its citation metadata."""
-    check_query(query)
-    generator, storage_manager = _build_generator(rephrase(query), chat_id, collection_name)
+def answer_question(query, chat_id, collection_name):
+    generator, storage_manager = _build_generator(
+        query,
+        chat_id,    
+        collection_name,
+    )
 
     answer = ""
-    sources: List[Dict[str, Any]] = []
+    sources = []
 
     for chunk in generator.generate_answer():
         event = json.loads(chunk)
-        kind = event.get("type")
-        if kind == "tokens":
-            # The web-search fallback path emits only tokens, never an answer block.
-            answer += event.get("text") or ""
-        elif kind == "answer":
-            answer = event.get("text", answer)
-        elif kind == "context":
-            sources = list(json.loads(event.get("text", "{}")).values())
 
-    _save_chat_history(chat_id, storage_manager)
+        if event.get("type") == "tokens":
+            answer += event.get("text", "")
+
+        elif event.get("type") == "answer":
+            answer = event.get("text", answer)
+
+        elif event.get("type") == "context":
+            sources = list(
+                json.loads(event.get("text", "{}")).values()
+            )
+
     return answer.strip(), sources
 
 
@@ -284,20 +253,7 @@ def _split(text: str, chunk_size: int, overlap: int) -> List[str]:
 
 
 def index_pdf(pdf_path: Path, chapter_id: str, collection_name: str) -> Dict[str, Any]:
-    """Extract a PDF, index its chunks in Qdrant, and upload persistence to S3."""
-    from llama_index.core import Settings, StorageContext, load_index_from_storage
-    from llama_index.core.indices.vector_store.base import VectorStoreIndex
-    from llama_index.core.node_parser.node_utils import build_nodes_from_splits
-    from llama_index.core.schema import Document
-    from llama_index.embeddings.huggingface import HuggingFaceEmbedding
-    from llama_index.vector_stores.qdrant import QdrantVectorStore
-    from generate import StorageManager
-    import qdrant_client
 
-    try:
-        from pypdf import PdfReader
-    except ImportError:
-        from PyPDF2 import PdfReader
 
     config, secret = get_runtime()
 
@@ -476,16 +432,10 @@ def summarize_highlights(highlights: List[str], style: str) -> str:
 # --------------------------------------------------------------------------- #
 
 def stream_chat(query: str, chat_id: str, collection_name: str) -> Iterator[str]:
-    """Return an SSE event iterator for the RAG stream.
-
-    This is deliberately a plain function that returns a generator, not a
-    generator function itself. Setup (profanity check, index load, query engine
-    construction) runs when the route calls this, so failures can still become a
-    500. If this were a generator function nothing would execute until the first
-    chunk was pulled, by which point the 200 response has already been sent.
-    """
-    check_query(query)
-    generator, storage_manager = _build_generator(rephrase(query), chat_id, collection_name)
+    """Return an SSE event iterator for the RAG stream."""
+    generator, storage_manager = _build_generator(
+        query, chat_id, collection_name
+    )
     stream = generator.generate_answer()
 
     def events() -> Iterator[str]:
@@ -494,4 +444,4 @@ def stream_chat(query: str, chat_id: str, collection_name: str) -> Iterator[str]
         _save_chat_history(chat_id, storage_manager)
         yield "data: [DONE]\n\n"
 
-    return events()   
+    return events()  

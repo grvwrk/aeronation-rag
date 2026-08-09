@@ -1,5 +1,4 @@
 from fastapi import FastAPI, HTTPException, BackgroundTasks, status
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional, Dict, Any
@@ -23,6 +22,7 @@ from llama_index.llms.openai_like import OpenAILike
 from tenacity import retry, stop_after_attempt, wait_exponential
 from generate import Generate, StorageManager
 from secrets_manager import get_secret
+from routes import router 
 
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
@@ -365,14 +365,6 @@ class AppManager:
                 openapi_url=None
             )
 
-            AppManager._app.add_middleware(
-                CORSMiddleware,
-                allow_origins=["*"],
-                allow_credentials=True,
-                allow_methods=["*"],
-                allow_headers=["*"],
-            )
-
         return AppManager._app
 
     @property
@@ -398,6 +390,7 @@ async def lifespan(app):
 
 app_manager = AppManager()
 app = app_manager.app
+app.include_router(router)
 
 
 async def save_chat_history(

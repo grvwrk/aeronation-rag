@@ -59,13 +59,13 @@ class StorageManager:
     """Manages S3 storage operations including persist directory and chat history."""
 
     _s3_client = None
+    _chat_hist = None
+    _chat_id = None
     _persist_dir_cache = {}
 
     def __init__(self, config: Dict[str, Any], secret: Dict[str, Any]):
         self._config = config
         self._secret = secret
-        self._chat_hist = None
-        self._chat_id = None
         self._init_s3_client()
 
     def _init_s3_client(self) -> boto3.client:
@@ -143,14 +143,16 @@ class StorageManager:
         try:
             logger.info(f"Loading chat history for chat ID: {curr_chat_id}")
 
-            if curr_chat_id == self._chat_id:
+            if (
+                curr_chat_id == StorageManager._chat_id
+                and StorageManager._chat_hist is not None
+            ):
                 logger.debug("Returning cached chat history")
-                return self._chat_hist
+                return StorageManager._chat_hist
 
-            self._chat_id = curr_chat_id
-            self._chat_hist = None
+            StorageManager._chat_id = curr_chat_id
             chat_summ_file = (
-                f"{self._config['S3_CHAT_HISTORY']}/{self._chat_id}.md"
+                f"{self._config['S3_CHAT_HISTORY']}/{StorageManager._chat_id}.md"
             )
 
             s3_chat_summ_obj = StorageManager._s3_client.list_objects_v2(
@@ -172,9 +174,7 @@ class StorageManager:
                 response = StorageManager._s3_client.get_object(
                     Bucket=self._config["S3_LOGS_BUCKET"], Key=chat_summ_file
                 )
-                self._chat_hist = response["Body"].read().decode("utf-8")
-
-            return self._chat_hist
+                StorageManager._chat_hist = response["Body"].read().decode("utf-8")
 
         except ClientError as e:
             logger.error(f"S3 error loading chat history: {e}")
