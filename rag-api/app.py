@@ -1,5 +1,4 @@
 import os
-os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 os.environ["FASTEMBED_CACHE_DIR"] = "./.fastembed_cache"
 
@@ -552,7 +551,6 @@ if __name__ == "__main__":
     import uvicorn
     import os 
 
-    os.environ["HF_HUB_OFFLINE"] = "1"
     os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 
     port = int(os.environ.get("PORT", 8000))
