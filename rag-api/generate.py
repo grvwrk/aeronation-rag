@@ -390,6 +390,9 @@ class Generate:
                     url=self._secret["QDRANT_URL"], 
                     api_key=self._secret["QDRANT_API_KEY"]
                 )
+            from pathlib import Path
+            repo_root = Path(__file__).resolve().parent 
+            abs_cache_dir = str(repo_root / ".fastembed_cache")
 
             # 3. Pass the shared static instances directly into your Vector Store
             vector_store = QdrantVectorStore(
@@ -398,6 +401,7 @@ class Generate:
                 collection_name=collection_name,
                 enable_hybrid=self._config["QDRANT_ENABLE_HYBRID"],
                 fastembed_sparse_model=self._config["FASTEMBED_SPARSE_MODEL"],
+                fastembed_cache_dir=abs_cache_dir,
                 prefer_grpc=False,
                 batch_size=16
             )
