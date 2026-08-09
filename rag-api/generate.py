@@ -439,15 +439,18 @@ class Generate:
             sim_processor = SimilarityPostprocessor(
                 similarity_cutoff=self._config["RAG_SIMILARITY_CUTOFF"]
             )
+            
+            # Read COHERE_API_KEY directly from self._secret instead of _model_manager
             rerank = CohereRerank(
-                api_key=self._model_manager._secret["COHERE_API_KEY"],
+                api_key=self._secret["COHERE_API_KEY"],
                 model=self._config["COHERE_RERANKER"],
                 top_n=self._config["RAG_RERANKED_TOP_N"],
             )
 
+            # Access models directly through LlamaIndex's global Settings object
             self.query_engine = CitationQueryEngine.from_args(
                 index,
-                embed_model=self._model_manager.embed_model,
+                embed_model=Settings.embed_model,
                 chat_mode="context",
                 citation_chunk_size=self._config["RAG_CITATION_CHUNK_SIZE"],
                 citation_chunk_overlap=self._config["RAG_CITATION_CHUNK_OVERLAP"],
@@ -460,7 +463,7 @@ class Generate:
                 similarity_top_k=self._config["RAG_SIMILARITY_TOP_K"],
                 node_postprocessors=[rerank, sim_processor],
                 filters=MetadataFilters(filters=metadata_filters or []),
-                llm=self._model_manager.llm_model,
+                llm=Settings.llm,
                 streaming=self._config["RAG_STREAMING"],
             )
             logger.info("Successfully initialized query engine")
@@ -473,10 +476,11 @@ class Generate:
         """Generate and yield the answer for the given query."""
         try:
             logger.debug("Checking if query is a greeting")
-            is_greeting = self._model_manager.llm_model.complete(
+            is_greeting = Settings.llm.complete(
                 self._prompts.greeting_classifier.format(query=self._query),
                 max_tokens=32,
             ).text.strip()
+
 
             
             answer = ""
@@ -521,7 +525,7 @@ class Generate:
                     ),
                 ]
 
-                tavily_resp = self._model_manager.llm_model.stream_chat(
+                tavily_resp = Settings.llm.stream_chat(
                     tavily_prompt, max_tokens=256
                 )
 
@@ -575,7 +579,7 @@ class Generate:
 
             # Generate related queries
             logger.info("Generating related queries...")
-            related_queries = self._model_manager.llm_model.complete(
+            related_queries = Settings.llm.complete(
                 self._prompts.related_queries_template.format(
                     query=self._query,
                     sources="\n\n".join(
@@ -597,7 +601,7 @@ class Generate:
             # Generate conversation title if no chat history
             if self._storage_manager.chat_hist is None:
                 logger.info("Generating conversation title...")
-                conversation_title = self._model_manager.llm_model.complete(
+                conversation_title = Settings.llm.complete(
                     self._prompts.conv_title_template.format(query=self._query),
                     max_tokens=64,
                 ).text.strip()
