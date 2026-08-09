@@ -13,7 +13,6 @@ This script:
 - persists the LlamaIndex doc/index files to `persist/<collection_name>/`
 - uploads the persist files to S3 at `<S3_PERSIST_DIR>/<persist_dir>/<collection_name>/`
 
-Make sure your virtualenv has the project's requirements installed.
 """
 import argparse
 import logging

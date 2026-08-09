@@ -21,15 +21,16 @@ from llama_index.core.query_engine import CitationQueryEngine
 from llama_index.vector_stores.qdrant import QdrantVectorStore
 from llama_index.postprocessor.cohere_rerank import CohereRerank
 from llama_index.core.postprocessor import SimilarityPostprocessor
-from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+# from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+from llama_index.embeddings.fastembed import FastEmbedEmbedding
 from llama_index.core.vector_stores import MetadataFilters, MetadataFilter
 from llama_index.llms.anthropic import Anthropic
-from llama_index.llms.groq.base import Groq
 from llama_index.llms.openai import OpenAI
 from llama_index.llms.ollama import Ollama
 from llama_index.core.llms import ChatMessage, MessageRole
 from llama_index.core.prompts import PromptTemplate
 from tenacity import retry, stop_after_attempt, wait_exponential
+from llama_index.llms.openai_like import OpenAILike
 
 warnings.filterwarnings("ignore")
 
@@ -232,19 +233,34 @@ class ModelManager:
         self._secret = secret
         logger.info("Initializing ModelManager...")
 
-    def _load_embed_model(self) -> HuggingFaceEmbedding:
-        """Load the embedding model."""
+    def _load_embed_model(self) -> FastEmbedEmbedding:
+        """Load the lightweight fastembed model."""
         try:
-            logger.info(f"Loading embedding model: {self._config['HF_EMBED']}")
-            return HuggingFaceEmbedding(model_name=self._config["HF_EMBED"])
+            # We map your config model string cleanly into FastEmbed
+            model_name = self._config["HF_EMBED"] 
+            max_length = self._config.get("HF_EMBED_MAX_LENGTH", 512)
+
+            from pathlib import Path
+            repo_root = Path(__file__).resolve().parent
+
+            abs_cache_dir = str(repo_root / ".fastembed_cache")
+            logger.info(f"Loading local cached embedding model from: {abs_cache_dir}")
+
+            logger.info(f"Loading lightweight ONNX embedding model: {model_name}")
+            return FastEmbedEmbedding(
+                model_name=model_name,
+                max_length=max_length,
+                cache_dir=abs_cache_dir # Render safe temp directory
+            )
         except Exception as e:
             logger.error(f"Error loading embedding model: {e}")
             raise
 
+
     @retry(
         stop=stop_after_attempt(5), wait=wait_exponential(multiplier=1, min=4, max=60)
     )
-    def _load_llm_model(self) -> Union[OpenAI, Ollama, Anthropic, Groq]:
+    def _load_llm_model(self) -> Union[OpenAI, Ollama, Anthropic, OpenAILike]:
         """Load the LLM model with retry logic."""
         try:
             model_type = self._config["LLM_MODEL_TYPE"]
@@ -280,13 +296,18 @@ class ModelManager:
                     timeout=self._config["ANTHROPIC"]["REQUEST_TIMEOUT"],
                 )
             elif model_type == "GROQ":
-                return Groq(
+                return OpenAILike(
                     model=self._config["GROQ"]["MODEL_NAME"],
                     api_key=self._secret["GROQ_API_KEY"],
+                    additional_kwargs={"reasoning_effort": "low"},
+                    # Groq OpenAI-compatible endpoint
+                    api_base=self._config["GROQ"]["API_BASE"],
+                    is_chat_model=True,
                     temperature=self._config["GROQ"]["TEMPERATURE"],
                     max_tokens=self._config["GROQ"]["MAX_TOKENS"],
                     timeout=self._config["GROQ"]["REQUEST_TIMEOUT"],
-                    context_window=8000,  # match Groq's real TPM ceiling, not the model's 128K
+
+                    reuse_client=True,
                 )
             else:
                 raise ValueError(f"Invalid LLM model type: {model_type}")
@@ -296,14 +317,14 @@ class ModelManager:
             raise
 
     @property
-    def embed_model(self) -> HuggingFaceEmbedding:
+    def embed_model(self) -> FastEmbedEmbedding:
         """Get the loaded embedding model."""
         if ModelManager._embed_model is None:
             ModelManager._embed_model = self._load_embed_model()
         return ModelManager._embed_model
 
     @property
-    def llm_model(self) -> Union[OpenAI, Ollama, Anthropic, Groq]:
+    def llm_model(self) -> Union[OpenAI, Ollama, Anthropic, OpenAILike]:
         """Get the loaded LLM model."""
         if ModelManager._llm_model is None:
             ModelManager._llm_model = self._load_llm_model()
@@ -312,6 +333,10 @@ class ModelManager:
 
 class Generate:
     """Main class for generating answers to user queries."""
+
+    # 1. Add class-level caching fields at the very top of the class
+    _qdrant_client = None
+    _async_qdrant_client = None
 
     def __init__(
         self,
@@ -324,6 +349,7 @@ class Generate:
         s3_manager: StorageManager,
         metadata: Dict[str, Any] = {},
     ):
+        # ... keep all existing __init__ assignments completely the same ...
         self._config = config
         self._secret = secret
         self._query = query
@@ -350,30 +376,33 @@ class Generate:
         metadata_filters = self._prepare_metadata_filters(metadata)
         self._init_query_engine(index, metadata_filters)
 
-    def _prepare_query(self) -> str:
-        """Prepare the refined query with chat history."""
-        if self._storage_manager.chat_hist is not None:
-            return f"<|CHAT HISTORY|>: {self._storage_manager.chat_hist}\n\n<|QUERY|>: {self._query}"
-        return f"<|QUERY|>: {self._query}"
-
     def _setup_storage_context(self, collection_name: str) -> StorageContext:
-        """Setup storage context with Qdrant vector store."""
+        """Setup storage context with cached Qdrant vector store."""
         try:
-            client = qdrant_client.QdrantClient(
-                url=self._secret["QDRANT_URL"], api_key=self._secret["QDRANT_API_KEY"]
-            )
+            # 2. Check if the clients have already been instantiated globally
+            if Generate._qdrant_client is None:
+                logger.info("Initializing persistent Qdrant synchronous client...")
+                Generate._qdrant_client = qdrant_client.QdrantClient(
+                    url=self._secret["QDRANT_URL"], 
+                    api_key=self._secret["QDRANT_API_KEY"]
+                )
 
-            aclient = qdrant_client.AsyncQdrantClient(
-                url=self._secret["QDRANT_URL"], api_key=self._secret["QDRANT_API_KEY"]
-            )
+            if Generate._async_qdrant_client is None:
+                logger.info("Initializing persistent Qdrant asynchronous client...")
+                Generate._async_qdrant_client = qdrant_client.AsyncQdrantClient(
+                    url=self._secret["QDRANT_URL"], 
+                    api_key=self._secret["QDRANT_API_KEY"]
+                )
 
+            # 3. Pass the shared static instances directly into your Vector Store
             vector_store = QdrantVectorStore(
-                client=client,
-                aclient=aclient,
+                client=Generate._qdrant_client,
+                aclient=Generate._async_qdrant_client,
                 collection_name=collection_name,
                 enable_hybrid=self._config["QDRANT_ENABLE_HYBRID"],
                 fastembed_sparse_model=self._config["FASTEMBED_SPARSE_MODEL"],
                 prefer_grpc=False,
+                batch_size=16
             )
 
             storage_context = StorageContext.from_defaults(
@@ -383,7 +412,16 @@ class Generate:
             return index
         except Exception as e:
             logger.error(f"Error setting up storage context: {e}")
-            raise
+            raise 
+    
+    def _prepare_query(self) -> str:
+        """Prepare the refined query with chat history."""
+        # 8 SPACES INDENTATION FOR THE CODE INSIDE IT
+        if self._storage_manager.chat_hist is not None:
+            return f"<|CHAT HISTORY|>: {self._storage_manager.chat_hist}\n\n<|QUERY|>: {self._query}"
+        return f"<|QUERY|>: {self._query}"
+
+
 
     def _prepare_metadata_filters(
         self, metadata: Dict[str, Any]
@@ -442,9 +480,10 @@ class Generate:
             
             answer = ""
             logger.info("Retrieving relevant documents...")
-            retrieved_docs = self.query_engine.retrieve(
-                QueryBundle(query_str=self._refined_query)
-            )
+            query_bundle = QueryBundle(query_str=self._refined_query)
+            retrieved_docs = self.query_engine.retrieve(query_bundle)
+            if len(retrieved_docs) > 3:
+                retrieved_docs = retrieved_docs[:3]
 
             logger.info(f"Retrieved documents: {retrieved_docs}")
             logger.info(
