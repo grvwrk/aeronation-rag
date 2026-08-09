@@ -360,10 +360,7 @@ class Generate:
 
         self._prompts = PromptManager.load_prompts(self._config)
 
-        self._model_manager = ModelManager(config, self._secret)
-        Settings.llm = self._model_manager.llm_model
-        Settings.embed_model = self._model_manager.embed_model
-
+        
         # Load chat history and prepare query
         self._storage_manager.load_chat_history(chat_id)
         self._refined_query = self._prepare_query()

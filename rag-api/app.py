@@ -1,3 +1,8 @@
+import os
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+os.environ["FASTEMBED_CACHE_DIR"] = "./.fastembed_cache"
+
 from fastapi import FastAPI, HTTPException, BackgroundTasks, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
@@ -10,7 +15,6 @@ import time
 import yaml
 import atexit
 import socket
-import os
 import gc
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -332,6 +336,24 @@ class AppManager:
             self._llm = await asyncio.to_thread(
                 LLMManager.init_llm, self._settings.config, self._settings.secret
             )
+            from llama_index.core import Settings as LlamaSettings
+            from llama_index.embeddings.fastembed import FastEmbedEmbedding
+            from pathlib import Path
+
+            repo_root = Path(__file__).resolve().parent
+            abs_cache_dir = str(repo_root / ".fastembed_cache")
+            
+            logger.info(f"Globally initializing embedding model from: {abs_cache_dir}")
+            global_embed = FastEmbedEmbedding(
+                model_name=self._settings.config["HF_EMBED"],
+                max_length=self._settings.config.get("HF_EMBED_MAX_LENGTH", 512),
+                cache_dir=abs_cache_dir
+            )
+
+            # Lock them globally inside LlamaIndex settings
+            LlamaSettings.llm = self._llm
+            LlamaSettings.embed_model = global_embed
+            # --------------------------------------------------------
             self._initialized = True
         except Exception as exc:
             logger.exception("Application initialization failed: %s", exc)
