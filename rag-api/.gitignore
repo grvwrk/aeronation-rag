@@ -162,7 +162,13 @@ cython_debug/
 #.idea/
 
 .DS_Store
-logs/
+Thumbs.db
 **/.ipynb_checkpoints/
 .ruff_cache/
+
+# Runtime artefacts
+logs/
+uploads/
+persist/
+
 **/*.pdf
