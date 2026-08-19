@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "beautifulsoup4>=4.15.0",
     "boto3>=1.43.66",
     "cohere>=5.21.1",
     "fastapi>=0.141.1",
@@ -19,12 +20,19 @@ dependencies = [
     "llama-index-postprocessor-cohere-rerank>=0.9.0",
     "llama-index-vector-stores-qdrant>=0.8.8",
     "nest-asyncio>=1.6.0",
+    "pdf2image>=1.17.0",
+    "pillow>=11.3.0",
     "pydantic>=2.13.4",
+    "pypdf>=6.16.1",
     "pypdf2>=3.0.1",
+    "pytesseract>=0.3.13",
+    "python-docx>=1.2.0",
     "pyyaml>=6.0.3",
     "qdrant-client<1.16",
+    "requests>=2.34.2",
     "tavily-python>=0.7.27",
     "tenacity>=9.1.4",
+    "trafilatura>=2.2.0",
     "uvicorn>=0.52.1",
     "watchtower>=3.4.0",
 ]

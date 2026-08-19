@@ -1,0 +1,59 @@
+{
+  "schema_version": "1.0.0",
+  "collection_type": "rag_llm",
+  "ingestion_id": "rag_llm_20260819T060511Z_d74aec0e",
+  "version": "rag_llm_20260819T060511Z_d74aec0e",
+  "status": "COMPLETED",
+  "attempt": 1,
+  "max_attempts": 3,
+  "failed_stage": null,
+  "error": null,
+  "qdrant": {
+    "collection_name": "rag_llm",
+    "dense_vector_name": "text-dense",
+    "sparse_vector_name": "text-sparse-new",
+    "dimension": 384,
+    "distance": "Cosine",
+    "enable_hybrid": true
+  },
+  "embedding": {
+    "dense_model": "sentence-transformers/all-MiniLM-L6-v2",
+    "sparse_model": "Qdrant/bm42-all-minilm-l6-v2-attentions",
+    "dimension": 384
+  },
+  "chunking": {
+    "chunk_size": 512,
+    "chunk_overlap": 64,
+    "min_chunk_size": 0
+  },
+  "counts": {
+    "files_seen": 1,
+    "docs_loaded": 1,
+    "docs_cleaned": 1,
+    "docs_discarded": 0,
+    "chunks_created": 1,
+    "embeddings_generated": 1,
+    "chunks_failed": 0,
+    "vectors_inserted": 1,
+    "vectors_failed": 0
+  },
+  "persistence": {
+    "format": "llamaindex",
+    "files": [
+      "docstore.json",
+      "graph_store.json",
+      "image__vector_store.json",
+      "index_store.json",
+      "manifest.json"
+    ],
+    "checksums": {
+      "docstore.json": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "graph_store.json": "sha256:1062066bc85452d028723e03eb2b1e55dd2d8284da4c7cba1f19c4d7b6eb6f72",
+      "image__vector_store.json": "sha256:d17ed74c1649a438e518a8dc56a7772913dfe1ea7a7605bce069c63872431455",
+      "index_store.json": "sha256:c68cd016bc78fcac4c33a41436670ffdf509c84a4bc0a767e84fdaf14e06bc1f",
+      "manifest.json": "sha256:05f43fef0f7dfd86b9663bdb397cc6ad7c85b02fd64f948a207919ac5ac8184e"
+    }
+  },
+  "created_at": "2026-08-19T06:06:43.399084+00:00",
+  "updated_at": "2026-08-19T06:06:43.421550+00:00"
+}

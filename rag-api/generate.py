@@ -12,6 +12,15 @@ from urllib.parse import quote
 
 import boto3
 import qdrant_client
+
+# Compatibility shim for newer qdrant-client versions with llama-index-vector-stores-qdrant
+try:
+    import qdrant_client.qdrant_fastembed as _qf
+    if not hasattr(_qf, "IDF_EMBEDDING_MODELS"):
+        _qf.IDF_EMBEDDING_MODELS = []
+except Exception:
+    pass
+
 import nest_asyncio
 from tavily import TavilyClient
 from botocore.exceptions import ClientError
