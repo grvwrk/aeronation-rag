@@ -31,6 +31,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+# Compatibility shim for newer qdrant-client versions with llama-index-vector-stores-qdrant
+try:
+    import qdrant_client.qdrant_fastembed as _qf
+    if not hasattr(_qf, "IDF_EMBEDDING_MODELS"):
+        _qf.IDF_EMBEDDING_MODELS = []
+except Exception:
+    pass
+
 from llama_index.core import StorageContext
 from llama_index.vector_stores.qdrant import QdrantVectorStore
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding

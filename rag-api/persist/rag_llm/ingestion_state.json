@@ -1,0 +1,14 @@
+{
+  "ingestion_id": "rag_llm_20260819T060511Z_d74aec0e",
+  "version": "rag_llm_20260819T060511Z_d74aec0e",
+  "collection_type": "rag_llm",
+  "status": "COMPLETED",
+  "current_stage": "completed",
+  "failed_stage": null,
+  "attempt": 1,
+  "max_attempts": 3,
+  "error": null,
+  "created_at": "2026-08-19T06:05:11.748416+00:00",
+  "updated_at": "2026-08-19T06:06:43.421550+00:00",
+  "metadata": {}
+}
