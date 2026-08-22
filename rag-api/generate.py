@@ -6,7 +6,7 @@ import warnings
 import logging
 import re
 from pathlib import Path
-from typing import Optional, Dict, Generator, List, Any, Union
+from typing import ClassVar, Optional, Dict, AsyncGenerator, List, Any, Union
 from pydantic import BaseModel
 from urllib.parse import quote
 
@@ -40,6 +40,7 @@ from llama_index.core.llms import ChatMessage, MessageRole
 from llama_index.core.prompts import PromptTemplate
 from tenacity import retry, stop_after_attempt, wait_exponential
 from llama_index.llms.openai_like import OpenAILike
+from observability import log_latency, log_query_token_usage, log_token_stream
 
 warnings.filterwarnings("ignore")
 
@@ -60,8 +61,23 @@ class PromptConfig(BaseModel):
     related_queries_template: str = "related_queries.prompt"
     system_prompt: str = "system.prompt"
     tavily_template: str = "tavily.prompt"
-    greeting_classifier: str = "greeting_classifier.prompt"
-    greeting: str = "greeting.prompt"
+
+
+class ConditionalCohereRerank(CohereRerank):
+    """Avoid the Cohere request unless there are enough candidates to reorder."""
+
+    minimum_nodes: ClassVar[int] = 3
+
+    def _postprocess_nodes(self, nodes, query_bundle=None):
+        if len(nodes) < self.minimum_nodes:
+            logger.info("stage=rerank skipped; retrieved_nodes=%d", len(nodes))
+            log_latency("rerank_skipped", 0, retrieved_nodes=len(nodes))
+            return nodes
+        started = time.perf_counter()
+        result = super()._postprocess_nodes(nodes, query_bundle)
+        logger.info("stage=rerank duration=%.3fs nodes=%d", time.perf_counter() - started, len(nodes))
+        log_latency("rerank", time.perf_counter() - started, retrieved_nodes=len(nodes))
+        return result
 
 
 class StorageManager:
@@ -344,9 +360,6 @@ class Generate:
     """Main class for generating answers to user queries."""
 
     # 1. Add class-level caching fields at the very top of the class
-    _qdrant_client = None
-    _async_qdrant_client = None
-
     def __init__(
         self,
         config: Dict[str, Any],
@@ -357,13 +370,23 @@ class Generate:
         collection_name: str,
         s3_manager: StorageManager,
         metadata: Dict[str, Any] = {},
+        qdrant_client_instance=None,
+        async_qdrant_client_instance=None,
+        reranker: Optional[CohereRerank] = None,
+        request_id: Optional[str] = None,
     ):
         # ... keep all existing __init__ assignments completely the same ...
         self._config = config
         self._secret = secret
         self._query = query
+        self._collection_name = collection_name
+        self._request_id = request_id or str(uuid.uuid4())
+        self._chat_id = chat_id
         self._storage_manager = s3_manager
         self._tavily_client = TavilyClient(api_key=self._secret["TAVILY_API_KEY"])
+        self._qdrant_client = qdrant_client_instance
+        self._async_qdrant_client = async_qdrant_client_instance
+        self._reranker = reranker
 
         logger.info("Initializing Generate")
 
@@ -382,31 +405,25 @@ class Generate:
         metadata_filters = self._prepare_metadata_filters(metadata)
         self._init_query_engine(index, metadata_filters)
 
+    @classmethod
+    async def create(cls, *args, **kwargs) -> "Generate":
+        """Build request-specific state off the event loop (S3/index loading is synchronous)."""
+        import asyncio
+        return await asyncio.to_thread(cls, *args, **kwargs)
+
     def _setup_storage_context(self, collection_name: str) -> StorageContext:
         """Setup storage context with cached Qdrant vector store."""
         try:
-            # 2. Check if the clients have already been instantiated globally
-            if Generate._qdrant_client is None:
-                logger.info("Initializing persistent Qdrant synchronous client...")
-                Generate._qdrant_client = qdrant_client.QdrantClient(
-                    url=self._secret["QDRANT_URL"], 
-                    api_key=self._secret["QDRANT_API_KEY"]
-                )
-
-            if Generate._async_qdrant_client is None:
-                logger.info("Initializing persistent Qdrant asynchronous client...")
-                Generate._async_qdrant_client = qdrant_client.AsyncQdrantClient(
-                    url=self._secret["QDRANT_URL"], 
-                    api_key=self._secret["QDRANT_API_KEY"]
-                )
+            if self._qdrant_client is None or self._async_qdrant_client is None:
+                raise RuntimeError("Shared Qdrant clients must be initialized by AppManager")
             from pathlib import Path
             repo_root = Path(__file__).resolve().parent 
             abs_cache_dir = str(repo_root / ".fastembed_cache")
 
             # 3. Pass the shared static instances directly into your Vector Store
             vector_store = QdrantVectorStore(
-                client=Generate._qdrant_client,
-                aclient=Generate._async_qdrant_client,
+                client=self._qdrant_client,
+                aclient=self._async_qdrant_client,
                 collection_name=collection_name,
                 enable_hybrid=self._config["QDRANT_ENABLE_HYBRID"],
                 fastembed_sparse_model=self._config["FASTEMBED_SPARSE_MODEL"],
@@ -449,12 +466,8 @@ class Generate:
                 similarity_cutoff=self._config["RAG_SIMILARITY_CUTOFF"]
             )
             
-            # Read COHERE_API_KEY directly from self._secret instead of _model_manager
-            rerank = CohereRerank(
-                api_key=self._secret["COHERE_API_KEY"],
-                model=self._config["COHERE_RERANKER"],
-                top_n=self._config["RAG_RERANKED_TOP_N"],
-            )
+            if self._reranker is None:
+                raise RuntimeError("Shared Cohere reranker must be initialized by AppManager")
 
             # Access models directly through LlamaIndex's global Settings object
             self.query_engine = CitationQueryEngine.from_args(
@@ -470,7 +483,8 @@ class Generate:
                     self._prompts.citation_template + self._prompts.refine_template
                 ),
                 similarity_top_k=self._config["RAG_SIMILARITY_TOP_K"],
-                node_postprocessors=[rerank, sim_processor],
+                # Cohere is deliberately invoked only when retrieval yields >2 nodes.
+                node_postprocessors=[self._reranker, sim_processor],
                 filters=MetadataFilters(filters=metadata_filters or []),
                 llm=Settings.llm,
                 streaming=self._config["RAG_STREAMING"],
@@ -481,21 +495,19 @@ class Generate:
             logger.error(f"Error initializing query engine: {e}")
             raise
 
-    def generate_answer(self) -> Generator[str, None, None]:
+    async def generate_answer(self) -> AsyncGenerator[str, None]:
         """Generate and yield the answer for the given query."""
         try:
-            logger.debug("Checking if query is a greeting")
-            is_greeting = Settings.llm.complete(
-                self._prompts.greeting_classifier.format(query=self._query),
-                max_tokens=32,
-            ).text.strip()
-
-
-            
             answer = ""
             logger.info("Retrieving relevant documents...")
+            retrieval_started = time.perf_counter()
             query_bundle = QueryBundle(query_str=self._refined_query)
-            retrieved_docs = self.query_engine.retrieve(query_bundle)
+            retrieved_docs = await self.query_engine.aretrieve(query_bundle)
+            logger.info("stage=retrieval duration=%.3fs", time.perf_counter() - retrieval_started)
+            log_latency(
+                "retrieval", time.perf_counter() - retrieval_started,
+                request_id=self._request_id, retrieved_nodes=len(retrieved_docs),
+            )
             if len(retrieved_docs) > 3:
                 retrieved_docs = retrieved_docs[:3]
 
@@ -512,9 +524,10 @@ class Generate:
                 <= self._config["RAG_SIMILARITY_CUTOFF"]
             ):
                 logger.warning("No relevant contexts retrieved")
-                search_results = self._tavily_client.search(
-                    self._query, max_results=3, search_depth="advanced"
-                )["results"]
+                import asyncio
+                search_results = (await asyncio.to_thread(
+                    self._tavily_client.search, self._query, max_results=3, search_depth="advanced"
+                ))["results"]
                 content = "\n\n".join(
                     [
                         f"{idx+1}. Title: {result['title']}\nContent: {result['content']}\nURL: {result['url']}"
@@ -534,11 +547,11 @@ class Generate:
                     ),
                 ]
 
-                tavily_resp = Settings.llm.stream_chat(
+                tavily_resp = Settings.llm.astream_chat(
                     tavily_prompt, max_tokens=256
                 )
 
-                for text in tavily_resp:
+                async for text in tavily_resp:
                     yield json.dumps(
                         {
                             "response_id": str(uuid.uuid4()),
@@ -552,15 +565,36 @@ class Generate:
             # Generate response
             logger.info("Generating response...")
             start_response = time.perf_counter()
-            response = self.query_engine.query(self._refined_query)
-            end_response = time.perf_counter()
-            logger.info(
-                f"Time taken to generate response: {end_response - start_response} seconds"
-            )
+            logger.info("stage=generation_start")
+            log_latency("generation_start", 0, request_id=self._request_id)
+            response = await self.query_engine.aquery(self._refined_query)
+            logger.info("stage=generation_stream_ready duration=%.3fs", time.perf_counter() - start_response)
+            log_latency("generation_stream_ready", time.perf_counter() - start_response, request_id=self._request_id)
 
-            for text in response.response_gen:
+            output_token_estimate = 0
+            chunk_sequence = 0
+            first_token_at = None
+            previous_chunk_at = start_response
+            async for text in response.async_response_gen():
                 if text != "Empty Response":
+                    now = time.perf_counter()
+                    if first_token_at is None:
+                        first_token_at = now
+                        log_latency("time_to_first_token", now - start_response, request_id=self._request_id)
                     answer += text
+                    chunk_tokens = self._estimate_tokens(text)
+                    output_token_estimate += chunk_tokens
+                    chunk_sequence += 1
+                    log_token_stream(
+                        request_id=self._request_id,
+                        chat_id=self._chat_id,
+                        sequence=chunk_sequence,
+                        elapsed_ms=round((now - start_response) * 1000, 2),
+                        inter_chunk_ms=round((now - previous_chunk_at) * 1000, 2),
+                        chunk_tokens_estimate=chunk_tokens,
+                        cumulative_output_tokens_estimate=output_token_estimate,
+                    )
+                    previous_chunk_at = now
                     yield json.dumps(
                         {
                             "response_id": str(uuid.uuid4()),
@@ -568,6 +602,21 @@ class Generate:
                             "text": text,
                         }
                     )
+            logger.info("stage=generation_end duration=%.3fs", time.perf_counter() - start_response)
+            log_latency("generation_end", time.perf_counter() - start_response, request_id=self._request_id)
+            generation_duration = time.perf_counter() - start_response
+            input_tokens_estimate = self._estimate_tokens(self._refined_query)
+            log_query_token_usage(
+                request_id=self._request_id,
+                chat_id=self._chat_id,
+                collection_name=self._collection_name,
+                input_tokens_estimate=input_tokens_estimate,
+                output_tokens_estimate=output_token_estimate,
+                total_tokens_estimate=input_tokens_estimate + output_token_estimate,
+                generation_duration_ms=round(generation_duration * 1000, 2),
+                output_tokens_per_second=round(output_token_estimate / generation_duration, 2) if generation_duration else 0,
+                time_to_first_token_ms=round((first_token_at - start_response) * 1000, 2) if first_token_at else None,
+            )
 
             # Process contexts and citations
             logger.info("Processing contexts and citations...")
@@ -586,45 +635,15 @@ class Generate:
                 }
             )
 
-            # Generate related queries
-            logger.info("Generating related queries...")
-            related_queries = Settings.llm.complete(
-                self._prompts.related_queries_template.format(
-                    query=self._query,
-                    sources="\n\n".join(
-                        doc.node.get_text() for doc in response.source_nodes
-                    ),
-                    answer=answer,
-                ),
-                max_tokens=128,
-            ).text.strip()
-
-            yield json.dumps(
-                {
-                    "response_id": str(uuid.uuid4()),
-                    "type": "related",
-                    "text": related_queries,
-                }
-            )
-
-            # Generate conversation title if no chat history
-            if self._storage_manager.chat_hist is None:
-                logger.info("Generating conversation title...")
-                conversation_title = Settings.llm.complete(
-                    self._prompts.conv_title_template.format(query=self._query),
-                    max_tokens=64,
-                ).text.strip()
-
-                yield json.dumps(
-                    {
-                        "response_id": str(uuid.uuid4()),
-                        "type": "title",
-                        "text": conversation_title,
-                    }
-                )
-
             # Update chat history
+            had_chat_history = self._storage_manager.chat_hist is not None
             self._storage_manager.chat_hist = f"{self._refined_query}\n{answer}\n\n"
+            # These values are not needed to complete the answer stream.  Run the
+            # independent Groq calls after it has been sent to the client.
+            import asyncio
+            asyncio.create_task(
+                self._generate_follow_up_metadata(response.source_nodes, answer, had_chat_history)
+            )
             logger.info("Successfully completed response generation")
 
         except Exception as e:
@@ -672,3 +691,38 @@ class Generate:
         except Exception as e:
             logger.error(f"Error processing contexts: {e}")
             raise
+
+    async def _generate_follow_up_metadata(
+        self, source_nodes: List[Node], answer: str, had_chat_history: bool
+    ) -> None:
+        """Generate optional UI metadata without extending response latency."""
+        started = time.perf_counter()
+        related_prompt = self._prompts.related_queries_template.format(
+            query=self._query,
+            sources="\n\n".join(doc.node.get_text() for doc in source_nodes),
+            answer=answer,
+        )
+        calls = [Settings.llm.acomplete(related_prompt, max_tokens=128)]
+        if not had_chat_history:
+            calls.append(Settings.llm.acomplete(
+                self._prompts.conv_title_template.format(query=self._query), max_tokens=64
+            ))
+        try:
+            results = await asyncio.gather(*calls)
+            logger.info(
+                "stage=follow_up_metadata duration=%.3fs related=%s title=%s",
+                time.perf_counter() - started,
+                results[0].text.strip(),
+                results[1].text.strip() if len(results) > 1 else "not-requested",
+            )
+        except Exception:
+            logger.exception("Background related-query/title generation failed")
+
+    @staticmethod
+    def _estimate_tokens(text: str) -> int:
+        """Estimate tokens for local telemetry; provider billing remains authoritative."""
+        try:
+            import tiktoken
+            return len(tiktoken.get_encoding("cl100k_base").encode(text))
+        except Exception:
+            return len(text.split())

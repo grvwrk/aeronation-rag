@@ -12,6 +12,6 @@ services:
       uv run python scripts/download_model.py
 
     startCommand: |
-      uv run python -m uvicorn app:app --host 0.0.0.0 --port $PORT --log-level debug  --workers 1 --timeout-keep-alive 180
+      uv run python -m uvicorn app:app --host 0.0.0.0 --port $PORT --log-level debug --workers 2 --timeout-keep-alive 180
 
     autoDeploy: true

@@ -15,6 +15,7 @@ import yaml
 import atexit
 import socket
 import gc
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from botocore.exceptions import ClientError
@@ -24,7 +25,9 @@ from llama_index.llms.openai import OpenAI
 from llama_index.llms.ollama import Ollama
 from llama_index.llms.openai_like import OpenAILike
 from tenacity import retry, stop_after_attempt, wait_exponential
-from generate import Generate, StorageManager
+from generate import ConditionalCohereRerank, Generate, StorageManager
+from observability import configure_local_logging, log_latency
+import qdrant_client
 from secrets_manager import get_secret
 
 os.environ["OMP_NUM_THREADS"] = "1"
@@ -45,8 +48,6 @@ start_time = time.perf_counter()
 class PromptConfig(BaseModel):
     """Configuration for prompt templates."""
 
-    greeting_classifier: str = "greeting_classifier.prompt"
-    greeting: str = "greeting.prompt"
     profanity_filter: str = "profanity_filter.prompt"
     history_summarizer: str = "history_summarizer.prompt"
     rephrased_query: str = "rephrased_query.prompt"
@@ -78,22 +79,11 @@ class RAG(BaseModel):
 
     @field_validator("query")
     def validate_query(cls, value):
-        """Validate query is not empty and not profane."""
+        """Validate request-only invariants; network checks belong in the route."""
         if not value.strip():
             logger.warning("Query is empty")
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN, detail="Query cannot be empty."
-            )
-        elif app_manager.is_ready() and (
-            app_manager.llm.complete(
-                app_manager.prompts.profanity_filter.format(query=value), max_tokens=32
-            ).text.strip()
-            == "True"
-        ):
-            logger.warning(f"Inappropriate content detected in query: {value}")
-            raise HTTPException(
-                status_code=status.HTTP_406_NOT_ACCEPTABLE,
-                detail="Sorry, I won't be able to answer your query.",
             )
         return value
 
@@ -283,6 +273,9 @@ class AppManager:
     _startup_task = None
     _startup_error = None
     _startup_event = None
+    _qdrant_client = None
+    _async_qdrant_client = None
+    _reranker = None
 
     def __init__(self):
         self._settings = None
@@ -293,6 +286,9 @@ class AppManager:
         self._startup_task = None
         self._startup_error = None
         self._startup_event = asyncio.Event()
+        self._qdrant_client = None
+        self._async_qdrant_client = None
+        self._reranker = None
 
     def is_ready(self) -> bool:
         return self._initialized
@@ -322,6 +318,9 @@ class AppManager:
         try:
             logger.info("Initializing application services")
             self._settings = Settings()
+            # Always retain a local, structured copy. CloudWatch remains an
+            # additional destination when it is available.
+            configure_local_logging()
             try:
                 LogManager.setup_logging(self._settings.config, self._settings.secret)
             except Exception as exc:
@@ -352,6 +351,30 @@ class AppManager:
             # Lock them globally inside LlamaIndex settings
             LlamaSettings.llm = self._llm
             LlamaSettings.embed_model = global_embed
+            # Reuse connection-owning clients for every request in this worker.
+            # Keep the lightweight startup test configuration valid when these
+            # optional external-service settings are intentionally absent.
+            qdrant_url = self._settings.secret.get("QDRANT_URL")
+            cohere_key = self._settings.secret.get("COHERE_API_KEY")
+            if qdrant_url:
+                self._qdrant_client = qdrant_client.QdrantClient(
+                    url=qdrant_url,
+                    api_key=self._settings.secret.get("QDRANT_API_KEY"),
+                )
+                self._async_qdrant_client = qdrant_client.AsyncQdrantClient(
+                    url=qdrant_url,
+                    api_key=self._settings.secret.get("QDRANT_API_KEY"),
+                )
+            else:
+                logger.warning("Qdrant client not initialized: QDRANT_URL is missing")
+            if cohere_key:
+                self._reranker = ConditionalCohereRerank(
+                    api_key=cohere_key,
+                    model=self._settings.config["COHERE_RERANKER"],
+                    top_n=self._settings.config["RAG_RERANKED_TOP_N"],
+                )
+            else:
+                logger.warning("Cohere reranker not initialized: COHERE_API_KEY is missing")
             # --------------------------------------------------------
             self._initialized = True
         except Exception as exc:
@@ -407,6 +430,18 @@ class AppManager:
             self.initialize()
         return self._llm
 
+    @property
+    def qdrant_client(self):
+        return self._qdrant_client
+
+    @property
+    def async_qdrant_client(self):
+        return self._async_qdrant_client
+
+    @property
+    def reranker(self):
+        return self._reranker
+
 
 @asynccontextmanager
 async def lifespan(app):
@@ -433,17 +468,16 @@ async def save_chat_history(
 
         # Generate chat summary
         logger.debug("Generating chat summary")
-        summarized_hist = app_manager.llm.complete(
+        summarized_hist = (await app_manager.llm.acomplete(
             app_manager.prompts.history_summarizer.format(chat_history=chat_hist), max_tokens=256
-        ).text.strip()
+        )).text.strip()
 
         # Save to S3
         logger.debug("Saving summary to S3")
         s3_client = boto3.client("s3")
-        s3_client.put_object(
-            Bucket=config["S3_LOGS_BUCKET"],
-            Key=chat_summ_file,
-            Body=summarized_hist,
+        await asyncio.to_thread(
+            s3_client.put_object,
+            Bucket=config["S3_LOGS_BUCKET"], Key=chat_summ_file, Body=summarized_hist,
         )
 
         duration = time.perf_counter() - start_time
@@ -480,15 +514,34 @@ async def get_answer(rag: RAG, background_tasks: BackgroundTasks) -> StreamingRe
             await app_manager.wait_until_ready()
 
         start_time = time.perf_counter()
+        request_id = str(uuid.uuid4())
         logger.info(f"Processing chat request for chat_id: {rag.chat_id}")
         logger.info(
             f"API request started in {time.perf_counter() - start_time:.2f} seconds"
         )
 
-        # Rewrite query
-        rag.query = app_manager.llm.complete(
+        # These Groq calls are independent, so run them on the shared async client
+        # at the same time rather than serialising two network round trips.
+        validation_started = time.perf_counter()
+        profanity_call = app_manager.llm.acomplete(
+            app_manager.prompts.profanity_filter.format(query=rag.query), max_tokens=32
+        )
+        rephrase_started = time.perf_counter()
+        rephrase_call = app_manager.llm.acomplete(
             app_manager.prompts.rephrased_query.format(query=rag.query), max_tokens=64
-        ).text.strip()
+        )
+        profanity_result, rephrase_result = await asyncio.gather(profanity_call, rephrase_call)
+        logger.info("stage=validation duration=%.3fs", time.perf_counter() - validation_started)
+        log_latency("validation", time.perf_counter() - validation_started, request_id=request_id, chat_id=rag.chat_id)
+        logger.info("stage=rephrase duration=%.3fs", time.perf_counter() - rephrase_started)
+        log_latency("rephrase", time.perf_counter() - rephrase_started, request_id=request_id, chat_id=rag.chat_id)
+        if profanity_result.text.strip() == "True":
+            logger.warning("Inappropriate content detected in query for chat_id=%s", rag.chat_id)
+            raise HTTPException(
+                status_code=status.HTTP_406_NOT_ACCEPTABLE,
+                detail="Sorry, I won't be able to answer your query.",
+            )
+        rag.query = rephrase_result.text.strip()
         logger.info(f"Updated Query: {rag.query}")
 
         # Update metadata
@@ -500,7 +553,8 @@ async def get_answer(rag: RAG, background_tasks: BackgroundTasks) -> StreamingRe
         logger.debug("Initializing response generator")
         s3_manager = StorageManager(app_manager.settings.config, app_manager.settings.secret)
 
-        generate_obj = Generate(
+        generator_started = time.perf_counter()
+        generate_obj = await Generate.create(
             config=app_manager.settings.config,
             secret=app_manager.settings.secret,
             chat_id=rag.chat_id,
@@ -509,7 +563,13 @@ async def get_answer(rag: RAG, background_tasks: BackgroundTasks) -> StreamingRe
             collection_name=rag.collection_name,
             s3_manager=s3_manager,
             metadata=metadata,
+            qdrant_client_instance=app_manager.qdrant_client,
+            async_qdrant_client_instance=app_manager.async_qdrant_client,
+            reranker=app_manager.reranker,
+            request_id=request_id,
         )
+        logger.info("stage=generator_setup duration=%.3fs", time.perf_counter() - generator_started)
+        log_latency("generator_setup", time.perf_counter() - generator_started, request_id=request_id, chat_id=rag.chat_id)
 
         # Schedule chat history summarization
         logger.debug("Scheduling chat history summarization")
@@ -561,6 +621,8 @@ if __name__ == "__main__":
         port=port,
         log_level="info",
         reload=False,
+        # Native Windows worker processes are unstable with this model stack.
+        # Keep local development on one worker; Render's Linux command uses two.
         workers=1,
         loop="asyncio"
     )
