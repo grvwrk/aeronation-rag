@@ -382,8 +382,7 @@ class AppManager:
                 version="1.0",
                 description="API for Aeronation RAG system",
                 lifespan=lifespan,
-                redoc_url=None,
-                openapi_url=None
+
             )
 
             AppManager._app.add_middleware(

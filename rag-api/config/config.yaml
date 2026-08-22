@@ -37,7 +37,7 @@ PDF_BASE_URL: https://aeronation-rag-test-log-and-chat-history.s3.ap-south-1.ama
 S3_LOGS_BUCKET: aeronation-rag-test-log-and-chat-history
 S3_CHAT_HISTORY: chat_logs
 S3_PERSIST_BUCKET: aeronation-rag-test-log-and-chat-history
-S3_PERSIST_DIR: /home/ubuntu
+S3_PERSIST_DIR: "persist"
 
 AWS_REGION: ap-south-1
 SECRETS_MANAGER: aeronation/rag/test/api-keys
@@ -47,8 +47,8 @@ CLOUDWATCH_LOG_STREAM: altgan-log-stream
 QDRANT_ENABLE_HYBRID: True
 FASTEMBED_SPARSE_MODEL: "Qdrant/bm42-all-minilm-l6-v2-attentions"
 RAG_SIMILARITY_CUTOFF: 0.70
-RAG_SIMILARITY_TOP_K: 1
-RAG_RERANKED_TOP_N: 1
+RAG_SIMILARITY_TOP_K: 3
+RAG_RERANKED_TOP_N: 3
 RAG_CITATION_CHUNK_SIZE: 128
 RAG_CITATION_CHUNK_OVERLAP: 8
 RAG_STREAMING: True

@@ -663,7 +663,7 @@ class Generate:
                     }
                     answer = answer.replace(
                         f"[{str(idx+1)}]",
-                        f'[[{retrieved_counter}]]({self._config["PDF_BASE_URL"]}{quote(doc.metadata.get("file_name", "unknown"))}.pdf)',
+                        f'[[{retrieved_counter}]]({self._config["PDF_BASE_URL"]}{quote(doc.metadata.get("file_name", "unknown"))})',
                     )
 
             logger.debug(f"Processed {retrieved_counter} context citations")
