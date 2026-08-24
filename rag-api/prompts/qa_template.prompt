@@ -1,4 +1,8 @@
-Generate a coherent, relevant and well-structured markdown-rich answer using the provided sources.
+Generate a concise, directly relevant answer using only the provided sources.
+Answer in 2-4 short paragraphs or a short list. Put the direct answer first.
+Do not add facts that are not supported by the sources. If the sources are
+insufficient, say that the answer is not established by the provided sources.
+Place citations next to the claims they support.
 Follow these guidelines to incorporate markdown formatting wherever applicable:
 1. Identify headings and convert them to the appropriate level (e.g., # for h1, ## for h2, etc.)
 2. Identify lists and convert them into proper markdown bulleted or numbered lists

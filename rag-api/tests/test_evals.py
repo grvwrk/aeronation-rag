@@ -101,7 +101,7 @@ class EvaluationTests(unittest.TestCase):
 
     def test_llm_judge_scores_json_response(self) -> None:
         class FakeResponse:
-            text = '{"correctness": 0.9, "groundedness": 0.8, "relevance": 1}'
+            text = '{"correctness": {"score": 0.9, "reason": "Correct"}, "groundedness": {"score": 0.8, "reason": "Supported"}, "relevance": {"score": 1, "reason": "Direct"}}'
 
         class FakeLLM:
             async def acomplete(self, prompt: str) -> FakeResponse:
@@ -115,6 +115,7 @@ class EvaluationTests(unittest.TestCase):
         )
 
         self.assertEqual(report.metrics["llm_groundedness"], 0.8)
+        self.assertEqual(report.explanations["llm_correctness"], "Correct")
         self.assertTrue(report.passed)
 
     def test_retrieval_metrics_and_baseline_comparison(self) -> None:
