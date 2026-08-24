@@ -26,7 +26,7 @@ from llama_index.llms.ollama import Ollama
 from llama_index.llms.openai_like import OpenAILike
 from tenacity import retry, stop_after_attempt, wait_exponential
 from generate import ConditionalCohereRerank, Generate, StorageManager
-from observability import configure_local_logging, log_latency
+from observability import configure_local_logging, log_latency, log_request_complete
 import qdrant_client
 from secrets_manager import get_secret
 
@@ -508,16 +508,17 @@ async def health_check() -> JSONResponse:
 @app.post("/v1/chat", tags=["Chat API"])
 async def get_answer(rag: RAG, background_tasks: BackgroundTasks) -> StreamingResponse:
     """Process chat requests and generate RAG-based responses."""
+    request_started_at = time.perf_counter()
+    request_id = str(uuid.uuid4())
+    stream_tracking_started = False
     try:
         if not app_manager.is_ready():
             logger.info("First query received. Lazily initializing all application models...")
             await app_manager.wait_until_ready()
 
-        start_time = time.perf_counter()
-        request_id = str(uuid.uuid4())
         logger.info(f"Processing chat request for chat_id: {rag.chat_id}")
         logger.info(
-            f"API request started in {time.perf_counter() - start_time:.2f} seconds"
+            f"API request started in {time.perf_counter() - request_started_at:.2f} seconds"
         )
 
         # These Groq calls are independent, so run them on the shared async client
@@ -581,11 +582,30 @@ async def get_answer(rag: RAG, background_tasks: BackgroundTasks) -> StreamingRe
         logger.debug("Starting response generation")
         response = generate_obj.generate_answer()
         if response is not None:
-            duration = time.perf_counter() - start_time
+            async def monitored_content():
+                status = "completed"
+                try:
+                    async for chunk in response:
+                        yield chunk
+                except Exception:
+                    status = "error"
+                    raise
+                finally:
+                    log_request_complete(
+                        time.perf_counter() - request_started_at,
+                        request_id=request_id,
+                        chat_id=rag.chat_id,
+                        collection_name=rag.collection_name,
+                        status=status,
+                    )
+
+            stream_tracking_started = True
             logger.info(
-                f"Chat request processed successfully in {duration:.2f} seconds"
+                "Chat request accepted for streaming"
             )
-            return StreamingResponse(content=response, media_type="text/event-stream")
+            return StreamingResponse(
+                content=monitored_content(), media_type="text/event-stream"
+            )
 
     except Exception as e:
         logger.error(f"Error processing chat request: {e}")
@@ -593,6 +613,14 @@ async def get_answer(rag: RAG, background_tasks: BackgroundTasks) -> StreamingRe
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)
         )
     finally:  
+        if not stream_tracking_started:
+            log_request_complete(
+                time.perf_counter() - request_started_at,
+                request_id=request_id,
+                chat_id=rag.chat_id,
+                collection_name=rag.collection_name,
+                status="error",
+            )
         logger.info("Executing post-query memory sweep...")
         
         # Explicitly delete query generation object handles to release context

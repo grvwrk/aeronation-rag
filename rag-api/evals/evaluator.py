@@ -36,6 +36,7 @@ class EvaluationCase:
     reference_answer: str
     reference_contexts: tuple[str, ...] = ()
     expected_citations: tuple[str, ...] = ()
+    expected_context_ids: tuple[str, ...] = ()
     metadata: Mapping[str, Any] = field(default_factory=dict)
     max_latency_ms: float | None = None
     max_time_to_first_token_ms: float | None = None
@@ -49,6 +50,7 @@ class EvaluationCase:
             reference_answer=str(value["reference_answer"]),
             reference_contexts=tuple(value.get("reference_contexts", ())),
             expected_citations=tuple(value.get("expected_citations", ())),
+            expected_context_ids=tuple(value.get("expected_context_ids", ())),
             metadata=value.get("metadata", {}),
             max_latency_ms=value.get("max_latency_ms"),
             max_time_to_first_token_ms=value.get("max_time_to_first_token_ms"),
@@ -64,6 +66,11 @@ class Prediction:
     answer: str
     contexts: tuple[str, ...] = ()
     citations: tuple[str, ...] = ()
+    retrieved_context_ids: tuple[str, ...] = ()
+    retrieved_scores: tuple[float, ...] = ()
+    retrieved_nodes: int | None = None
+    reranked_nodes: int | None = None
+    fallback_used: bool | None = None
     latency_ms: float | None = None
     stage_latencies_ms: Mapping[str, float] = field(default_factory=dict)
     time_to_first_token_ms: float | None = None
@@ -75,6 +82,9 @@ class Prediction:
     token_chunks: int | None = None
     average_inter_chunk_ms: float | None = None
     max_inter_chunk_ms: float | None = None
+    request_id: str | None = None
+    model_name: str | None = None
+    cost_usd: float | None = None
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "Prediction":
@@ -83,6 +93,11 @@ class Prediction:
             answer=str(value.get("answer", "")),
             contexts=tuple(_as_text(context) for context in contexts),
             citations=tuple(str(citation) for citation in value.get("citations", ())),
+            retrieved_context_ids=tuple(str(item) for item in value.get("retrieved_context_ids", ())),
+            retrieved_scores=tuple(float(item) for item in value.get("retrieved_scores", ())),
+            retrieved_nodes=value.get("retrieved_nodes"),
+            reranked_nodes=value.get("reranked_nodes"),
+            fallback_used=value.get("fallback_used"),
             latency_ms=value.get("latency_ms"),
             stage_latencies_ms=value.get("stage_latencies_ms", {}),
             time_to_first_token_ms=value.get("time_to_first_token_ms"),
@@ -94,6 +109,9 @@ class Prediction:
             token_chunks=value.get("token_chunks"),
             average_inter_chunk_ms=value.get("average_inter_chunk_ms"),
             max_inter_chunk_ms=value.get("max_inter_chunk_ms"),
+            request_id=value.get("request_id"),
+            model_name=value.get("model_name"),
+            cost_usd=value.get("cost_usd"),
         )
 
 
@@ -153,6 +171,24 @@ def _citation_coverage(expected: Iterable[str], actual: Iterable[str]) -> float:
     return len(expected & actual) / len(expected)
 
 
+def _retrieval_metrics(
+    expected: Iterable[str], retrieved: Iterable[str]
+) -> dict[str, float]:
+    expected = list(dict.fromkeys(expected))
+    retrieved = list(dict.fromkeys(retrieved))
+    if not expected:
+        return {}
+    relevant = set(expected) & set(retrieved)
+    recall = len(relevant) / len(expected)
+    precision = len(relevant) / len(retrieved) if retrieved else 0.0
+    first_match = next((index for index, item in enumerate(retrieved, 1) if item in set(expected)), None)
+    return {
+        "retrieval_recall_at_k": recall,
+        "retrieval_precision_at_k": precision,
+        "retrieval_mrr": 1 / first_match if first_match else 0.0,
+    }
+
+
 def evaluate_case(case: EvaluationCase, prediction: Prediction) -> EvaluationReport:
     """Score one response using deterministic metrics suitable for CI."""
 
@@ -166,6 +202,16 @@ def evaluate_case(case: EvaluationCase, prediction: Prediction) -> EvaluationRep
             case.expected_citations, prediction.citations
         ),
     }
+    metrics.update(
+        _retrieval_metrics(case.expected_context_ids, prediction.retrieved_context_ids)
+    )
+    if prediction.retrieved_scores:
+        metrics["retrieval_score_average"] = round(
+            sum(prediction.retrieved_scores) / len(prediction.retrieved_scores), 4
+        )
+        metrics["retrieval_score_minimum"] = round(
+            min(prediction.retrieved_scores), 4
+        )
     for name, value in prediction.stage_latencies_ms.items():
         metrics[f"latency_{name}_ms"] = float(value)
     optional_metrics = {
@@ -179,6 +225,9 @@ def evaluate_case(case: EvaluationCase, prediction: Prediction) -> EvaluationRep
         "token_chunks": prediction.token_chunks,
         "average_inter_chunk_ms": prediction.average_inter_chunk_ms,
         "max_inter_chunk_ms": prediction.max_inter_chunk_ms,
+        "retrieved_nodes": prediction.retrieved_nodes,
+        "reranked_nodes": prediction.reranked_nodes,
+        "cost_usd": prediction.cost_usd,
     }
     metrics.update({name: float(value) for name, value in optional_metrics.items() if value is not None})
 
@@ -214,6 +263,9 @@ def evaluate_case(case: EvaluationCase, prediction: Prediction) -> EvaluationRep
         checks["token_accounting"] = prediction.total_tokens_estimate == (
             prediction.input_tokens_estimate + prediction.output_tokens_estimate
         )
+    if case.expected_context_ids:
+        checks["retrieval_recall_at_k"] = metrics.get("retrieval_recall_at_k", 0.0) >= 0.5
+        checks["retrieval_mrr"] = metrics.get("retrieval_mrr", 0.0) >= 0.5
     return EvaluationReport(query=case.query, metrics=metrics, checks=checks)
 
 
@@ -228,6 +280,56 @@ def evaluate_dataset(
             raise KeyError(f"Missing prediction for query: {case.query}")
         reports.append(evaluate_case(case, predictions[case.query]))
     return reports
+
+
+def aggregate_metrics(reports: Iterable[EvaluationReport]) -> dict[str, float]:
+    """Return averages for every metric present in a report collection."""
+
+    values: dict[str, list[float]] = {}
+    for report in reports:
+        for name, value in report.metrics.items():
+            values.setdefault(name, []).append(value)
+    return {
+        name: round(sum(metric_values) / len(metric_values), 4)
+        for name, metric_values in values.items()
+        if metric_values
+    }
+
+
+def compare_baseline(
+    current: Mapping[str, float],
+    baseline: Mapping[str, float],
+    quality_drop: float = 0.05,
+    latency_increase_percent: float = 15.0,
+    token_increase_percent: float = 10.0,
+) -> dict[str, Any]:
+    """Compare aggregate metrics and return changes plus regression checks."""
+
+    quality_metrics = (
+        "answer_correctness",
+        "groundedness",
+        "context_recall",
+        "citation_coverage",
+        "retrieval_recall_at_k",
+        "retrieval_precision_at_k",
+        "retrieval_mrr",
+    )
+    latency_metrics = ("latency_ms", "time_to_first_token_ms", "generation_duration_ms")
+    token_metrics = ("total_tokens_estimate", "input_tokens_estimate", "output_tokens_estimate")
+    changes = {
+        name: round(current[name] - baseline[name], 4)
+        for name in current.keys() & baseline.keys()
+    }
+    checks: dict[str, bool] = {}
+    for name in quality_metrics:
+        if name in changes:
+            checks[f"quality_{name}"] = changes[name] >= -quality_drop
+    for name in latency_metrics + token_metrics:
+        if name in current and name in baseline and baseline[name] > 0:
+            increase = (current[name] - baseline[name]) / baseline[name] * 100
+            limit = latency_increase_percent if name in latency_metrics else token_increase_percent
+            checks[f"regression_{name}"] = increase <= limit
+    return {"changes": changes, "checks": checks, "passed": all(checks.values())}
 
 
 async def evaluate_case_with_llm_judge(

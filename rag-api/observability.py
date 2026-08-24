@@ -30,6 +30,7 @@ def configure_local_logging() -> None:
         ("rag.latency", "latency.log"),
         ("rag.token_stream", "token_stream.log"),
         ("rag.token_usage", "query_token_usage.log"),
+        ("rag.retrieval", "retrieval.log"),
     ):
         dedicated_logger = logging.getLogger(name)
         handler = logging.FileHandler(LOG_DIRECTORY / filename, encoding="utf-8")
@@ -63,3 +64,32 @@ def log_token_stream(**fields: Any) -> None:
 
 def log_query_token_usage(**fields: Any) -> None:
     _write("rag.token_usage", "query_token_usage", **fields)
+
+
+def log_request_complete(duration_seconds: float, **fields: Any) -> None:
+    """Record end-to-end latency after the response stream is consumed."""
+    _write(
+        "rag.latency",
+        "request_complete",
+        total_request_latency_ms=round(duration_seconds * 1000, 2),
+        **fields,
+    )
+
+
+def log_retrieval(**fields: Any) -> None:
+    """Record retrieval IDs, scores, and fallback behavior for evals."""
+    _write("rag.retrieval", "retrieval_result", **fields)
+
+
+def estimate_cost_usd(
+    input_tokens: int | None,
+    output_tokens: int | None,
+    config: dict[str, Any] | None = None,
+) -> float | None:
+    """Estimate provider cost using configurable USD rates per 1K tokens."""
+    if input_tokens is None or output_tokens is None:
+        return None
+    settings = config or {}
+    input_rate = float(settings.get("LLM_INPUT_COST_PER_1K", 0) or 0)
+    output_rate = float(settings.get("LLM_OUTPUT_COST_PER_1K", 0) or 0)
+    return round(input_tokens / 1000 * input_rate + output_tokens / 1000 * output_rate, 8)

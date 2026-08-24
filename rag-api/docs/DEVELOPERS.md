@@ -343,6 +343,7 @@ High-level steps executed per request (`/v1/chat` -> `Generate`):
 
 - Errors in S3/Qdrant/LLM initialization are logged at appropriate levels (error/critical) and often re-raised to produce API 500 responses.
 - The app configures CloudWatch logging via `LogManager.setup_logging()` if available; otherwise local logging is used.
+- Request telemetry is written as structured events to local files when local logging is enabled: `request_complete` in `latency.log`, `query_token_usage` in `query_token_usage.log`, and `retrieval_result` in `retrieval.log`.
 
 ### 9) Extension & customization points
 

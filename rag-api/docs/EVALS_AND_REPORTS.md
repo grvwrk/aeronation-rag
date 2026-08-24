@@ -37,6 +37,7 @@ parts contributors should edit.
 | `logs/latency.log` | Structured stage latency events |
 | `logs/query_token_usage.log` | Per-request token and generation telemetry |
 | `logs/token_stream.log` | Per-stream-chunk timing and token estimates |
+| `logs/retrieval.log` | Retrieved chunk IDs, scores, node counts, and fallback state |
 | `tests/test_evals.py` | Deterministic tests for the evaluation package |
 
 ## Setup
@@ -107,7 +108,23 @@ chunking, metadata filtering, or reranking problems.
 
 `citation_coverage` is the fraction of expected citation identifiers present in
 the prediction. Citation identifiers should use the same source naming used by
-the application, such as `b787_overview.pdf`.
+the application, such as `2309.06180v1.pdf`.
+
+### Retrieval metrics
+
+When a case provides `expected_context_ids` and the live runner provides
+`retrieved_context_ids`, the evaluator calculates:
+
+- `retrieval_recall_at_k`: expected chunks found in the retrieved set.
+- `retrieval_precision_at_k`: retrieved chunks that match expected chunks.
+- `retrieval_mrr`: reciprocal rank of the first expected chunk.
+- `retrieval_score_average` and `retrieval_score_minimum`: similarity-score
+  summaries when scores are available.
+
+The runtime retrieval log also records `retrieved_nodes`, `reranked_nodes`, and
+`fallback_used`. Fallback uses Tavily when local retrieval returns no adequate
+context, so fallback answers should be analyzed separately from indexed-corpus
+answers.
 
 ### Performance and token metrics
 
@@ -124,6 +141,8 @@ When present, the report also displays:
 - `token_chunks`: number of streamed chunks
 - `average_inter_chunk_ms`: average delay between chunks
 - `max_inter_chunk_ms`: largest delay between chunks
+- `cost_usd`: estimated request cost when provider token rates are configured
+- `model_name`: model used for the request
 
 These are estimates where the application says `estimate`; provider billing
 numbers remain authoritative.
@@ -134,15 +153,15 @@ Add one JSON object per line to [evals/dataset.jsonl](../evals/dataset.jsonl):
 
 ```json
 {
-  "query": "What does Mach number compare?",
-  "reference_answer": "Mach number is the ratio of an object's speed to the speed of sound.",
+  "query": "What problem does PagedAttention solve in LLM serving?",
+  "reference_answer": "PagedAttention efficiently manages the KV cache using virtual memory and copy-on-write techniques.",
   "reference_contexts": [
-    "Mach number is speed of sound ratio. It determines compressible flow regime."
+    "PagedAttention adapts virtual memory and copy-on-write techniques to efficiently manage the KV cache in LLM serving."
   ],
-  "expected_citations": ["fluid_mechanics.pdf"],
-  "max_latency_ms": 5000,
-  "max_time_to_first_token_ms": 3000,
-  "max_total_tokens": 600,
+  "expected_citations": ["2309.06180v1.pdf"],
+  "max_latency_ms": 60000,
+  "max_time_to_first_token_ms": 30000,
+  "max_total_tokens": 1000,
   "min_output_tokens_per_second": 1
 }
 ```
@@ -167,10 +186,12 @@ A minimal prediction is:
 
 ```json
 {
-  "query": "What does Mach number compare?",
-  "answer": "Mach number is the ratio of an object's speed to the speed of sound.",
-  "contexts": ["Mach number is speed of sound ratio."],
-  "citations": ["fluid_mechanics.pdf"]
+  "query": "What problem does PagedAttention solve in LLM serving?",
+  "answer": "PagedAttention efficiently manages the KV cache using virtual memory and copy-on-write techniques.",
+  "contexts": ["PagedAttention adapts virtual memory and copy-on-write techniques to efficiently manage the KV cache in LLM serving."],
+  "citations": ["2309.06180v1.pdf"],
+  "retrieved_context_ids": ["chunk-example"],
+  "retrieved_scores": [0.89]
 }
 ```
 
@@ -202,9 +223,12 @@ make reports
 The script reads:
 
 - The evaluation dataset and predictions for the eval dashboard.
+- `evals/live_predictions.jsonl` when it exists; otherwise the checked-in
+  `evals/predictions.jsonl` fixture.
 - `logs/latency.log` for stage latency events.
 - `logs/query_token_usage.log` for request-level token telemetry.
 - `logs/token_stream.log` for streamed chunk counts and timing.
+- `logs/retrieval.log` for retrieved chunk IDs, scores, and fallback state.
 
 It writes:
 
@@ -214,6 +238,62 @@ It writes:
 Open either file directly in a browser. Regenerate the files after changing
 the dataset, predictions, or logs. Do not manually edit generated HTML; change
 the generator or its source data instead.
+
+Every generation also writes an immutable summary snapshot to
+`reports/history/<UTC timestamp>.json`. These snapshots make it possible to
+compare report runs without relying on the current log files. Keep large raw
+logs out of history; snapshots contain aggregate values only.
+
+The eval dashboard uses `evals/live_predictions.jsonl` when present, which is
+the output of the most recent live run. Remove or rename that file when you
+want the dashboard to use the checked-in offline fixture instead.
+
+## Running live evaluations
+
+Use [scripts/run_live_evals.py](../scripts/run_live_evals.py) when you want to
+execute real RAG requests instead of reading a hand-written predictions file:
+
+```powershell
+python scripts/run_live_evals.py `
+  --runner-factory my_live_runner:run_case `
+  --output-predictions evals/live_predictions.jsonl `
+  --save-baseline reports/baseline.json
+```
+
+The runner factory receives one `EvaluationCase` and may return either a
+`Prediction` or a prediction dictionary. It may be synchronous or asynchronous.
+The adapter owns application setup and should use the existing `Generate`
+streaming path. It should collect the final answer, contexts, citation IDs,
+retrieved context IDs/scores, fallback state, and request/token telemetry.
+
+For the existing HTTP API, start the server and use the built-in adapter:
+
+```powershell
+$env:RAG_API_URL = "http://127.0.0.1:8000/v1/chat"
+python scripts/run_live_evals.py `
+  --runner-factory scripts.live_http_runner:run_case `
+  --output-predictions evals/live_predictions.jsonl `
+  --save-baseline reports/baseline.json
+```
+
+The adapter in [scripts/live_http_runner.py](../scripts/live_http_runner.py)
+consumes the streaming JSON events returned by `/v1/chat`. Set
+`RAG_API_TIMEOUT` in seconds when the default 300-second timeout is not right
+for the environment. Retrieval IDs and scores require the API to expose them
+in response events; the adapter still captures returned context text and source
+filenames for the quality metrics.
+
+On later runs, compare against the saved aggregate baseline:
+
+```powershell
+python scripts/run_live_evals.py `
+  --runner-factory my_live_runner:run_case `
+  --baseline reports/baseline.json
+```
+
+The default comparison allows a quality drop of 0.05, a latency increase of
+15 percent, and a token increase of 10 percent. Treat these as starting points;
+set stricter thresholds once the system has a stable baseline.
 
 ## Connecting a live RAG run
 
@@ -255,7 +335,20 @@ This is opt-in because it makes a provider request and consumes quota. Treat
 LLM judge scores as a review signal, not as an unquestionable source of truth.
 Use deterministic tests for regressions and human review for important changes.
 
-## Improving the system with the reports
+The CLI can load a project-specific LLM factory using `module:function` syntax:
+
+```powershell
+python scripts/run_evals.py `
+  --predictions evals/predictions.jsonl `
+  --judge-factory my_judge:create_llm
+```
+
+The factory must return a LlamaIndex-compatible LLM with an async
+`acomplete(prompt)` method. Keep the factory in a local or deployment-specific
+module so API keys stay in the existing environment or secret manager. The
+judge option is intentionally never enabled by default.
+
+## Diagnosing regressions
 
 Use the metric pattern to choose where to investigate:
 
@@ -270,6 +363,8 @@ Use the metric pattern to choose where to investigate:
 | High total token count | Prompt history, context size, or generation limits |
 | Low output tokens per second | Provider/model load, streaming path, or local resource limits |
 | Large max inter-chunk delay | Provider streaming pauses or event-loop contention |
+
+## Improving the system with the reports
 
 Change one important variable at a time, rerun the same eval set, and compare
 the generated report. A quality improvement that causes a significant latency

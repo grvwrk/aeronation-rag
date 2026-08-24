@@ -14,6 +14,8 @@ from evals import (
     evaluate_case,
     evaluate_case_with_llm_judge,
     evaluate_dataset,
+    aggregate_metrics,
+    compare_baseline,
 )
 
 
@@ -114,6 +116,33 @@ class EvaluationTests(unittest.TestCase):
 
         self.assertEqual(report.metrics["llm_groundedness"], 0.8)
         self.assertTrue(report.passed)
+
+    def test_retrieval_metrics_and_baseline_comparison(self) -> None:
+        case = EvaluationCase(
+            query="Retrieval",
+            reference_answer="The answer",
+            expected_context_ids=("chunk-a", "chunk-b"),
+        )
+        report = evaluate_case(
+            case,
+            Prediction(
+                answer="The answer",
+                retrieved_context_ids=("chunk-b", "chunk-extra"),
+                retrieved_scores=(0.8, 0.4),
+                cost_usd=0.002,
+            ),
+        )
+        current = aggregate_metrics([report])
+        comparison = compare_baseline(
+            current,
+            {"answer_correctness": 1.0, "latency_ms": 100.0},
+        )
+
+        self.assertEqual(report.metrics["retrieval_recall_at_k"], 0.5)
+        self.assertEqual(report.metrics["retrieval_mrr"], 1.0)
+        self.assertEqual(report.metrics["retrieval_score_average"], 0.6)
+        self.assertIn("cost_usd", current)
+        self.assertTrue(comparison["passed"])
 
 
 if __name__ == "__main__":

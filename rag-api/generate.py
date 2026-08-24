@@ -40,7 +40,13 @@ from llama_index.core.llms import ChatMessage, MessageRole
 from llama_index.core.prompts import PromptTemplate
 from tenacity import retry, stop_after_attempt, wait_exponential
 from llama_index.llms.openai_like import OpenAILike
-from observability import log_latency, log_query_token_usage, log_token_stream
+from observability import (
+    estimate_cost_usd,
+    log_latency,
+    log_query_token_usage,
+    log_retrieval,
+    log_token_stream,
+)
 
 warnings.filterwarnings("ignore")
 
@@ -523,6 +529,17 @@ class Generate:
                 or max([doc.score for doc in retrieved_docs])
                 <= self._config["RAG_SIMILARITY_CUTOFF"]
             ):
+                log_retrieval(
+                    request_id=self._request_id,
+                    collection_name=self._collection_name,
+                    retrieved_nodes=len(retrieved_docs),
+                    retrieved_context_ids=[
+                        doc.node.metadata.get("chunk_id", doc.node.metadata.get("source_id", "unknown"))
+                        for doc in retrieved_docs
+                    ],
+                    retrieved_scores=[doc.score for doc in retrieved_docs],
+                    fallback_used=True,
+                )
                 logger.warning("No relevant contexts retrieved")
                 import asyncio
                 search_results = (await asyncio.to_thread(
@@ -547,11 +564,20 @@ class Generate:
                     ),
                 ]
 
-                tavily_resp = Settings.llm.astream_chat(
+                tavily_resp = await Settings.llm.astream_chat(
                     tavily_prompt, max_tokens=256
                 )
 
+                fallback_started = time.perf_counter()
+                fallback_answer = ""
+                fallback_tokens = 0
+                fallback_first_token_at = None
                 async for text in tavily_resp:
+                    now = time.perf_counter()
+                    if fallback_first_token_at is None:
+                        fallback_first_token_at = now
+                    fallback_answer += text.delta
+                    fallback_tokens += self._estimate_tokens(text.delta)
                     yield json.dumps(
                         {
                             "response_id": str(uuid.uuid4()),
@@ -560,7 +586,46 @@ class Generate:
                         }
                     )
 
+                fallback_duration = time.perf_counter() - fallback_started
+                fallback_input_tokens = self._estimate_tokens(self._refined_query)
+                log_query_token_usage(
+                    request_id=self._request_id,
+                    chat_id=self._chat_id,
+                    collection_name=self._collection_name,
+                    input_tokens_estimate=fallback_input_tokens,
+                    output_tokens_estimate=fallback_tokens,
+                    total_tokens_estimate=fallback_input_tokens + fallback_tokens,
+                    generation_duration_ms=round(fallback_duration * 1000, 2),
+                    output_tokens_per_second=round(fallback_tokens / fallback_duration, 2)
+                    if fallback_duration
+                    else 0,
+                    time_to_first_token_ms=round(
+                        (fallback_first_token_at - fallback_started) * 1000, 2
+                    )
+                    if fallback_first_token_at
+                    else None,
+                    model_name=self._config.get(
+                        self._config.get("LLM_MODEL_TYPE", ""), {}
+                    ).get("MODEL_NAME"),
+                    cost_usd=estimate_cost_usd(
+                        fallback_input_tokens, fallback_tokens, self._config
+                    ),
+                )
+
                 return
+
+            log_retrieval(
+                request_id=self._request_id,
+                collection_name=self._collection_name,
+                retrieved_nodes=len(retrieved_docs),
+                reranked_nodes=len(retrieved_docs),
+                retrieved_context_ids=[
+                    doc.node.metadata.get("chunk_id", doc.node.metadata.get("source_id", "unknown"))
+                    for doc in retrieved_docs
+                ],
+                retrieved_scores=[doc.score for doc in retrieved_docs],
+                fallback_used=False,
+            )
 
             # Generate response
             logger.info("Generating response...")
@@ -616,6 +681,12 @@ class Generate:
                 generation_duration_ms=round(generation_duration * 1000, 2),
                 output_tokens_per_second=round(output_token_estimate / generation_duration, 2) if generation_duration else 0,
                 time_to_first_token_ms=round((first_token_at - start_response) * 1000, 2) if first_token_at else None,
+                model_name=self._config.get(self._config.get("LLM_MODEL_TYPE", ""), {}).get("MODEL_NAME"),
+                cost_usd=estimate_cost_usd(
+                    input_tokens_estimate,
+                    output_token_estimate,
+                    self._config,
+                ),
             )
 
             # Process contexts and citations
@@ -678,7 +749,7 @@ class Generate:
                     contexts[str(retrieved_counter)] = {
                         "file_name": doc.metadata.get("file_name", "unknown"),
                         "page_num": doc.metadata.get("page_num", "unknown"),
-                        "chunk": doc.metadata.get("highlighted_chunk"),
+                        "chunk": doc.metadata.get("highlighted_chunk") or source_text,
                     }
                     answer = answer.replace(
                         f"[{str(idx+1)}]",

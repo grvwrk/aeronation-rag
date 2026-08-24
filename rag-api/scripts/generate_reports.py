@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import html
 import json
 import re
@@ -129,7 +130,7 @@ charts.forEach(draw); window.addEventListener('resize',()=>charts.forEach(draw))
 </script></body></html>"""
 
 
-def build_evals_report(dataset_path: Path, predictions_path: Path, output_path: Path) -> None:
+def build_evals_report(dataset_path: Path, predictions_path: Path, output_path: Path) -> dict[str, Any]:
     cases = [EvaluationCase.from_dict(row) for row in _read_jsonl(dataset_path)]
     predictions = {
         row["query"]: Prediction.from_dict(row) for row in _read_jsonl(predictions_path)
@@ -150,26 +151,31 @@ def build_evals_report(dataset_path: Path, predictions_path: Path, output_path: 
         rows.append({"query": report.query, **{name: round(value, 2) for name, value in report.metrics.items()}, "status": "PASS" if report.passed else "FAIL"})
     cards = {"Cases": len(reports), "Passed": sum(report.passed for report in reports), "Avg correctness": averages.get("answer_correctness", 0), "Avg groundedness": averages.get("groundedness", 0), "Avg latency (ms)": averages.get("latency_ms", 0), "Avg output tok/s": averages.get("output_tokens_per_second", 0)}
     output_path.write_text(_render_dashboard("RAG evaluation report", "Quality and performance across the labeled evaluation set", cards, charts, rows), encoding="utf-8")
+    return {"cases": len(reports), "passed": sum(report.passed for report in reports), "averages": averages}
 
 
-def build_realtime_report(log_dir: Path, output_path: Path) -> None:
+def build_realtime_report(log_dir: Path, output_path: Path) -> dict[str, Any]:
     latency_events = _read_log_events(log_dir / "latency.log")
     token_events = _read_log_events(log_dir / "query_token_usage.log")
     stream_events = _read_log_events(log_dir / "token_stream.log")
+    retrieval_events = _read_log_events(log_dir / "retrieval.log")
     stage_values: dict[str, list[float]] = {}
     for event in latency_events:
         if event.get("stage") and isinstance(event.get("duration_ms"), (int, float)):
             stage_values.setdefault(str(event["stage"]), []).append(float(event["duration_ms"]))
     latency_values = [value for values in stage_values.values() for value in values]
-    token_fields = ["input_tokens_estimate", "output_tokens_estimate", "total_tokens_estimate", "output_tokens_per_second", "generation_duration_ms", "time_to_first_token_ms"]
+    request_events = [event for event in latency_events if event.get("event") == "request_complete"]
+    token_fields = ["input_tokens_estimate", "output_tokens_estimate", "total_tokens_estimate", "output_tokens_per_second", "generation_duration_ms", "time_to_first_token_ms", "cost_usd"]
     token_averages = {field: _average([float(event[field]) for event in token_events if isinstance(event.get(field), (int, float))]) for field in token_fields}
     charts = [
         {"id": "stages", "title": "Average latency by stage (ms)", "labels": sorted(stage_values), "values": [_average(stage_values[name]) for name in sorted(stage_values)], "color": "#087f8c"},
-        {"id": "tokens", "title": "Average token and generation telemetry", "labels": ["input", "output", "total", "tok/s", "generation ms", "TTFT ms"], "values": [token_averages[field] for field in token_fields], "color": "#d97736"},
+        {"id": "tokens", "title": "Average token and generation telemetry", "labels": ["input", "output", "total", "tok/s", "generation ms", "TTFT ms", "cost USD"], "values": [token_averages[field] for field in token_fields], "color": "#d97736"},
+        {"id": "retrieval", "title": "Retrieval quality signals", "labels": ["retrieved nodes", "reranked nodes", "fallback rate"], "values": [_average([float(event["retrieved_nodes"]) for event in retrieval_events if isinstance(event.get("retrieved_nodes"), (int, float))]), _average([float(event["reranked_nodes"]) for event in retrieval_events if isinstance(event.get("reranked_nodes"), (int, float))]), _average([1.0 if event.get("fallback_used") else 0.0 for event in retrieval_events])], "color": "#39824d"},
     ]
-    cards = {"Latency events": len(latency_events), "Token runs": len(token_events), "Stream chunks": len(stream_events), "Avg stage latency (ms)": _average(latency_values), "P95 stage latency (ms)": _p95(latency_values), "Avg total tokens": token_averages["total_tokens_estimate"], "Avg TTFT (ms)": token_averages["time_to_first_token_ms"], "P95 TTFT (ms)": _p95([float(event["time_to_first_token_ms"]) for event in token_events if isinstance(event.get("time_to_first_token_ms"), (int, float))]), "Avg output tok/s": token_averages["output_tokens_per_second"]}
+    cards = {"Completed requests": len(request_events), "Token runs": len(token_events), "Stream chunks": len(stream_events), "Retrieval runs": len(retrieval_events), "Avg request latency (ms)": _average([float(event["total_request_latency_ms"]) for event in request_events if isinstance(event.get("total_request_latency_ms"), (int, float))]), "P95 request latency (ms)": _p95([float(event["total_request_latency_ms"]) for event in request_events if isinstance(event.get("total_request_latency_ms"), (int, float))]), "Avg stage latency (ms)": _average(latency_values), "P95 stage latency (ms)": _p95(latency_values), "Avg total tokens": token_averages["total_tokens_estimate"], "Avg TTFT (ms)": token_averages["time_to_first_token_ms"], "P95 TTFT (ms)": _p95([float(event["time_to_first_token_ms"]) for event in token_events if isinstance(event.get("time_to_first_token_ms"), (int, float))]), "Avg output tok/s": token_averages["output_tokens_per_second"], "Avg cost (USD)": token_averages["cost_usd"], "Fallback rate": round(_average([1.0 if event.get("fallback_used") else 0.0 for event in retrieval_events]) * 100, 2)}
     rows = [{"request_id": event.get("request_id", "unknown"), **{field: event.get(field, "") for field in token_fields}} for event in token_events]
     output_path.write_text(_render_dashboard("RAG real-time report", "Observed request latency, streaming, and token telemetry from local logs", cards, charts, rows), encoding="utf-8")
+    return {"requests": len(request_events), "token_runs": len(token_events), "retrieval_runs": len(retrieval_events), "token_averages": token_averages, "request_latency": _stats([float(event["total_request_latency_ms"]) for event in request_events if isinstance(event.get("total_request_latency_ms"), (int, float))])}
 
 
 def main() -> int:
@@ -178,8 +184,14 @@ def main() -> int:
     parser.add_argument("--log-dir", type=Path, default=PROJECT_ROOT / "logs")
     args = parser.parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    build_evals_report(PROJECT_ROOT / "evals" / "dataset.jsonl", PROJECT_ROOT / "evals" / "predictions.jsonl", args.output_dir / "evals_report.html")
-    build_realtime_report(args.log_dir, args.output_dir / "realtime_report.html")
+    live_predictions = PROJECT_ROOT / "evals" / "live_predictions.jsonl"
+    predictions_path = live_predictions if live_predictions.exists() else PROJECT_ROOT / "evals" / "predictions.jsonl"
+    eval_summary = build_evals_report(PROJECT_ROOT / "evals" / "dataset.jsonl", predictions_path, args.output_dir / "evals_report.html")
+    realtime_summary = build_realtime_report(args.log_dir, args.output_dir / "realtime_report.html")
+    history_dir = args.output_dir / "history"
+    history_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    (history_dir / f"{timestamp}.json").write_text(json.dumps({"generated_at": timestamp, "evals": eval_summary, "realtime": realtime_summary}, indent=2) + "\n", encoding="utf-8")
     print(f"Generated {args.output_dir / 'evals_report.html'}")
     print(f"Generated {args.output_dir / 'realtime_report.html'}")
     return 0
