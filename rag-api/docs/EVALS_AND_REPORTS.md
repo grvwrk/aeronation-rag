@@ -143,6 +143,7 @@ When present, the report also displays:
 - `max_inter_chunk_ms`: largest delay between chunks
 - `cost_usd`: estimated request cost when provider token rates are configured
 - `model_name`: model used for the request
+- `answer_source`: `indexed_corpus` or `web_fallback`
 
 These are estimates where the application says `estimate`; provider billing
 numbers remain authoritative.
@@ -331,6 +332,19 @@ The judge is asked to return JSON scores from `0` to `1` for:
 - `groundedness`
 - `relevance`
 
+Each score may include a reason. The preferred response shape is:
+
+```json
+{
+  "correctness": {"score": 0.9, "reason": "The answer matches the source."},
+  "groundedness": {"score": 0.8, "reason": "The main claims are supported."},
+  "relevance": {"score": 1.0, "reason": "The response directly answers the question."}
+}
+```
+
+Score-only numeric values remain supported for compatibility. Reasons are
+retained in `EvaluationReport.explanations`.
+
 This is opt-in because it makes a provider request and consumes quota. Treat
 LLM judge scores as a review signal, not as an unquestionable source of truth.
 Use deterministic tests for regressions and human review for important changes.
@@ -340,13 +354,32 @@ The CLI can load a project-specific LLM factory using `module:function` syntax:
 ```powershell
 python scripts/run_evals.py `
   --predictions evals/predictions.jsonl `
-  --judge-factory my_judge:create_llm
+  --judge-factory my_judge:create_llm `
+  --judge-only `
+  --output-report reports/llm_judge_report.json
 ```
 
 The factory must return a LlamaIndex-compatible LLM with an async
 `acomplete(prompt)` method. Keep the factory in a local or deployment-specific
 module so API keys stay in the existing environment or secret manager. The
 judge option is intentionally never enabled by default.
+
+Use `--judge-only` when the deterministic token-overlap checks are not suitable
+for long paraphrased answers. The output JSON preserves each judge score and
+its explanation for review; this mode still requires a live provider call.
+
+## Prompt and fallback behavior
+
+The QA and refine prompts require concise answers, source-only claims, and
+citations beside supported claims. They instruct the model to say when the
+provided sources are insufficient instead of silently filling gaps from model
+memory.
+
+When local retrieval is below the configured similarity cutoff, the API may
+use Tavily. Such responses are labeled `answer_source=web_fallback` and
+`fallback_used=true`; they should not be compared directly with indexed-corpus
+groundedness results. The live report includes separate fallback counts and
+latency averages.
 
 ## Diagnosing regressions
 

@@ -68,6 +68,14 @@ def main() -> int:
         "--judge-factory",
         help="Optional LLM factory in the form module:function; makes live judge calls.",
     )
+    parser.add_argument(
+        "--judge-only",
+        action="store_true",
+        help="When judging, pass/fail only the LLM judge checks.",
+    )
+    parser.add_argument(
+        "--output-report", type=Path, help="Write evaluation metrics and explanations as JSON."
+    )
     args = parser.parse_args()
 
     cases = [EvaluationCase.from_dict(row) for row in _read_jsonl(args.dataset)]
@@ -78,6 +86,16 @@ def main() -> int:
     if args.judge_factory:
         judge = _load_judge(args.judge_factory)
         reports = asyncio.run(_evaluate_with_judge(cases, predictions, judge))
+        if args.judge_only:
+            reports = [
+                type(report)(
+                    report.query,
+                    report.metrics,
+                    {name: value for name, value in report.checks.items() if name.startswith("llm_")},
+                    report.explanations,
+                )
+                for report in reports
+            ]
     else:
         reports = evaluate_dataset(cases, predictions)
     for report in reports:
@@ -85,6 +103,25 @@ def main() -> int:
             f"{name}={value:.2f}" for name, value in report.metrics.items()
         )
         print(f"{'PASS' if report.passed else 'FAIL'} {report.query}: {values}")
+    if args.output_report:
+        args.output_report.parent.mkdir(parents=True, exist_ok=True)
+        args.output_report.write_text(
+            json.dumps(
+                [
+                    {
+                        "query": report.query,
+                        "metrics": report.metrics,
+                        "checks": report.checks,
+                        "explanations": report.explanations,
+                        "passed": report.passed,
+                    }
+                    for report in reports
+                ],
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
     return 0 if all(report.passed for report in reports) else 1
 
 

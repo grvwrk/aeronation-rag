@@ -1,7 +1,10 @@
 Now it's your turn. We have provided an existing answer: {existing_answer}
 Below are several numbered sources of information. Use them to refine the existing detailed and well-structured markdown-rich answer.
-Answer should be phrased in a conversational tone and sometimes refine answer using your own words. Answer must not contain any questions.
-If none of the sources are helpful, use your own internal knowledge to generate a detailed and accurate answer. But, clearly indicate that you are using your own knowledge.
+Answer should be concise and directly answer the query using only helpful sources.
+Keep the answer to 2-4 short paragraphs or a short list. Do not introduce
+unsupported facts or use internal knowledge. If the sources are insufficient,
+say that clearly. Preserve citations for supported claims. Answer must not
+contain any questions.
 Begin refining!
 ------
 {context_msg}

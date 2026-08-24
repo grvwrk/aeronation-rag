@@ -42,6 +42,7 @@ class EvaluationCase:
     max_time_to_first_token_ms: float | None = None
     max_total_tokens: int | None = None
     min_output_tokens_per_second: float | None = None
+    expected_behavior: str = "answer"
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "EvaluationCase":
@@ -56,6 +57,7 @@ class EvaluationCase:
             max_time_to_first_token_ms=value.get("max_time_to_first_token_ms"),
             max_total_tokens=value.get("max_total_tokens"),
             min_output_tokens_per_second=value.get("min_output_tokens_per_second"),
+            expected_behavior=str(value.get("expected_behavior", "answer")),
         )
 
 
@@ -85,6 +87,7 @@ class Prediction:
     request_id: str | None = None
     model_name: str | None = None
     cost_usd: float | None = None
+    answer_source: str = "indexed_corpus"
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "Prediction":
@@ -112,6 +115,7 @@ class Prediction:
             request_id=value.get("request_id"),
             model_name=value.get("model_name"),
             cost_usd=value.get("cost_usd"),
+            answer_source=str(value.get("answer_source", "indexed_corpus")),
         )
 
 
@@ -122,6 +126,7 @@ class EvaluationReport:
     query: str
     metrics: Mapping[str, float]
     checks: Mapping[str, bool] = field(default_factory=dict)
+    explanations: Mapping[str, str] = field(default_factory=dict)
 
     @property
     def passed(self) -> bool:
@@ -344,9 +349,11 @@ async def evaluate_case_with_llm_judge(
     """
 
     prompt = (
-        "Evaluate this RAG response. Return JSON only with numeric scores from 0 to 1 "
-        "for correctness, groundedness, and relevance. Groundedness means every "
-        "material claim is supported by the contexts.\n"
+        "Evaluate this RAG response. Return JSON only in this shape: "
+        '{"correctness": {"score": 0.0, "reason": "..."}, '
+        '"groundedness": {"score": 0.0, "reason": "..."}, '
+        '"relevance": {"score": 0.0, "reason": "..."}}. Scores must be 0 to 1. '
+        "Groundedness means every material claim is supported by the contexts.\n"
         f"Question: {case.query}\n"
         f"Reference answer: {case.reference_answer}\n"
         f"Answer: {prediction.answer}\n"
@@ -356,14 +363,28 @@ async def evaluate_case_with_llm_judge(
     raw_text = getattr(response, "text", str(response)).strip()
     try:
         scores = json.loads(raw_text)
+        def score(name: str) -> tuple[float, str]:
+            value = scores[name]
+            if isinstance(value, Mapping):
+                return float(value["score"]), str(value.get("reason", ""))
+            return float(value), ""
+
+        correctness, correctness_reason = score("correctness")
+        groundedness, groundedness_reason = score("groundedness")
+        relevance, relevance_reason = score("relevance")
         metrics = {
-            "llm_correctness": float(scores["correctness"]),
-            "llm_groundedness": float(scores["groundedness"]),
-            "llm_relevance": float(scores["relevance"]),
+            "llm_correctness": correctness,
+            "llm_groundedness": groundedness,
+            "llm_relevance": relevance,
+        }
+        explanations = {
+            "llm_correctness": correctness_reason,
+            "llm_groundedness": groundedness_reason,
+            "llm_relevance": relevance_reason,
         }
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise ValueError("LLM judge returned invalid evaluation JSON") from exc
 
     if any(score < 0 or score > 1 for score in metrics.values()):
         raise ValueError("LLM judge scores must be between 0 and 1")
-    return EvaluationReport(query=case.query, metrics=metrics)
+    return EvaluationReport(query=case.query, metrics=metrics, explanations=explanations)

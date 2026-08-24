@@ -87,6 +87,7 @@ async def _run(args) -> int:
                             for name, score in semantic.metrics.items()
                         },
                     },
+                    {**report.explanations, **semantic.explanations},
                 )
             )
         reports = judged_reports

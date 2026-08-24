@@ -628,7 +628,9 @@ class Generate:
                     yield json.dumps(
                         {
                             "response_id": str(uuid.uuid4()),
+                            "request_id": self._request_id,
                             "type": "tokens",
+                            "answer_source": "web_fallback",
                             "text": text.delta,
                         }
                     )
@@ -710,7 +712,9 @@ class Generate:
                     yield json.dumps(
                         {
                             "response_id": str(uuid.uuid4()),
+                            "request_id": self._request_id,
                             "type": "tokens",
+                            "answer_source": "indexed_corpus",
                             "text": text,
                         }
                     )
@@ -742,13 +746,15 @@ class Generate:
                 answer, response.source_nodes, retrieved_docs
             )
             yield json.dumps(
-                {"response_id": str(uuid.uuid4()), "type": "answer", "text": answer}
+                {"response_id": str(uuid.uuid4()), "request_id": self._request_id, "type": "answer", "answer_source": "indexed_corpus", "text": answer}
             )
 
             yield json.dumps(
                 {
                     "response_id": str(uuid.uuid4()),
+                    "request_id": self._request_id,
                     "type": "context",
+                    "answer_source": "indexed_corpus",
                     "text": json.dumps(contexts),
                 }
             )

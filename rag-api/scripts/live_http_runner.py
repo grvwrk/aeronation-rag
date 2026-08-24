@@ -34,7 +34,9 @@ def _decode_events(line: str) -> list[dict[str, Any]]:
     return events
 
 
-def _latest_log_event(filename: str, event_name: str) -> dict[str, Any]:
+def _latest_log_event(
+    filename: str, event_name: str, request_id: str | None = None
+) -> dict[str, Any]:
     path = Path(__file__).resolve().parent.parent / "logs" / filename
     if not path.exists():
         return {}
@@ -46,7 +48,9 @@ def _latest_log_event(filename: str, event_name: str) -> dict[str, Any]:
             event = json.loads(line[start:])
         except json.JSONDecodeError:
             continue
-        if event.get("event") == event_name:
+        if event.get("event") == event_name and (
+            request_id is None or event.get("request_id") == request_id
+        ):
             return event
     return {}
 
@@ -69,10 +73,12 @@ def run_case(case: EvaluationCase) -> Prediction:
     citations: list[str] = []
     first_token_ms: float | None = None
     token_chunks = 0
+    request_id: str | None = None
     for line in response.iter_lines(decode_unicode=True):
         if not line:
             continue
         for payload in _decode_events(line):
+            request_id = payload.get("request_id") or request_id
             event_type = payload.get("type")
             if event_type == "tokens":
                 if first_token_ms is None:
@@ -95,14 +101,15 @@ def run_case(case: EvaluationCase) -> Prediction:
     answer = "".join(answer_parts)
     input_tokens = _estimate_tokens(case.query)
     output_tokens = _estimate_tokens(answer)
-    retrieval = _latest_log_event("retrieval.log", "retrieval_result")
-    request_complete = _latest_log_event("latency.log", "request_complete")
-    request_id = request_complete.get("request_id") or retrieval.get("request_id")
+    request_complete = _latest_log_event("latency.log", "request_complete", request_id)
+    request_id = request_id or request_complete.get("request_id")
+    retrieval = _latest_log_event("retrieval.log", "retrieval_result", request_id)
     return Prediction(
         answer=answer,
         contexts=tuple(contexts),
         citations=tuple(dict.fromkeys(citations)),
         fallback_used=not contexts and not citations,
+        answer_source="indexed_corpus" if contexts or citations else "web_fallback",
         request_id=request_id,
         retrieved_context_ids=tuple(retrieval.get("retrieved_context_ids", ())),
         retrieved_scores=tuple(float(score) for score in retrieval.get("retrieved_scores", ())),
