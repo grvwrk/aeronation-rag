@@ -139,6 +139,32 @@ Start the FastAPI server (development):
 uvicorn app:app --host 0.0.0.0 --port 8000 --reload
 ```
 
+## Running RAG evals
+
+The offline evaluator in `evals/` scores answer correctness, groundedness,
+context recall, citation coverage, and available latency/token telemetry from
+JSONL cases and predictions. It does not call external services, so it is
+suitable for local regression checks:
+
+```powershell
+python scripts/run_evals.py --predictions evals/predictions.jsonl
+```
+
+Use `evals/dataset.jsonl` as the schema reference when adding cases. Predictions
+can include `latency_ms`, `stage_latencies_ms`, `time_to_first_token_ms`,
+`generation_duration_ms`, `input_tokens_estimate`, `output_tokens_estimate`,
+`total_tokens_estimate`, `output_tokens_per_second`, `token_chunks`,
+`average_inter_chunk_ms`, and `max_inter_chunk_ms`. Case-level limits such as
+`max_latency_ms`, `max_time_to_first_token_ms`, `max_total_tokens`, and
+`min_output_tokens_per_second` turn those signals into pass/fail checks.
+
+A live
+runner can call `EvaluationCase` with its generated `Prediction`; for semantic
+scoring, pass the configured LlamaIndex LLM to
+`evaluate_case_with_llm_judge`. The judge expects JSON scores for correctness,
+groundedness, and relevance and is intentionally opt-in because it consumes
+provider quota.
+
 Example request (JSON body):
 
 ```json
