@@ -5,6 +5,7 @@ import time
 import warnings
 import logging
 import re
+import threading
 from pathlib import Path
 from typing import ClassVar, Optional, Dict, AsyncGenerator, List, Any, Union
 from pydantic import BaseModel
@@ -168,6 +169,11 @@ class StorageManager:
         except Exception as e:
             logger.error(f"Unexpected error loading persist directory: {e}")
             raise
+
+    @classmethod
+    def clear_persist_dir_cache(cls, persist_dir: str, collection_name: str) -> None:
+        """Forget one downloaded persistence directory after re-ingestion."""
+        cls._persist_dir_cache.pop(f"{persist_dir}/{collection_name}", None)
 
     def load_chat_history(self, curr_chat_id: str) -> Optional[str]:
         """Load chat history for given chat ID."""
@@ -365,7 +371,21 @@ class ModelManager:
 class Generate:
     """Main class for generating answers to user queries."""
 
-    # 1. Add class-level caching fields at the very top of the class
+    _index_cache: dict[tuple[str, str], Any] = {}
+    _query_engine_cache: dict[tuple[str, str, tuple[tuple[str, str], ...]], Any] = {}
+    _index_cache_lock = threading.Lock()
+
+    @classmethod
+    def clear_index_cache(cls, persist_dir: str, collection_name: str) -> None:
+        """Invalidate a loaded index after its persistence artifact changes."""
+        key = (str((Path(persist_dir) / collection_name).resolve()), collection_name)
+        cls._index_cache.pop(key, None)
+        cls._query_engine_cache = {
+            cache_key: engine
+            for cache_key, engine in cls._query_engine_cache.items()
+            if cache_key[:2] != key
+        }
+
     def __init__(
         self,
         config: Dict[str, Any],
@@ -427,22 +447,29 @@ class Generate:
             abs_cache_dir = str(repo_root / ".fastembed_cache")
 
             # 3. Pass the shared static instances directly into your Vector Store
-            vector_store = QdrantVectorStore(
-                client=self._qdrant_client,
-                aclient=self._async_qdrant_client,
-                collection_name=collection_name,
-                enable_hybrid=self._config["QDRANT_ENABLE_HYBRID"],
-                fastembed_sparse_model=self._config["FASTEMBED_SPARSE_MODEL"],
-                fastembed_cache_dir=abs_cache_dir,
-                prefer_grpc=False,
-                batch_size=16
-            )
+            cache_key = (str(Path(self._persist).resolve()), collection_name)
+            with self._index_cache_lock:
+                cached_index = self._index_cache.get(cache_key)
+                if cached_index is not None:
+                    logger.info("Using cached index for collection: %s", collection_name)
+                    return cached_index
 
-            storage_context = StorageContext.from_defaults(
-                persist_dir=self._persist, vector_store=vector_store
-            )
-            index = load_index_from_storage(storage_context)
-            return index
+                vector_store = QdrantVectorStore(
+                    client=self._qdrant_client,
+                    aclient=self._async_qdrant_client,
+                    collection_name=collection_name,
+                    enable_hybrid=self._config["QDRANT_ENABLE_HYBRID"],
+                    fastembed_sparse_model=self._config["FASTEMBED_SPARSE_MODEL"],
+                    fastembed_cache_dir=abs_cache_dir,
+                    prefer_grpc=False,
+                    batch_size=16
+                )
+                storage_context = StorageContext.from_defaults(
+                    persist_dir=self._persist, vector_store=vector_store
+                )
+                index = load_index_from_storage(storage_context)
+                self._index_cache[cache_key] = index
+                return index
         except Exception as e:
             logger.error(f"Error setting up storage context: {e}")
             raise 
@@ -468,6 +495,24 @@ class Generate:
     ) -> None:
         """Initialize the citation query engine."""
         try:
+            filter_key = tuple(
+                sorted((item.key, str(item.value)) for item in metadata_filters or [])
+            )
+            cache_key = (
+                str(Path(self._persist).resolve()),
+                self._collection_name,
+                filter_key,
+            )
+            with self._index_cache_lock:
+                cached_engine = self._query_engine_cache.get(cache_key)
+                if cached_engine is not None:
+                    self.query_engine = cached_engine
+                    logger.info(
+                        "Using cached query engine for collection: %s",
+                        self._collection_name,
+                    )
+                    return
+
             sim_processor = SimilarityPostprocessor(
                 similarity_cutoff=self._config["RAG_SIMILARITY_CUTOFF"]
             )
@@ -495,6 +540,8 @@ class Generate:
                 llm=Settings.llm,
                 streaming=self._config["RAG_STREAMING"],
             )
+            with self._index_cache_lock:
+                self._query_engine_cache[cache_key] = self.query_engine
             logger.info("Successfully initialized query engine")
 
         except Exception as e:

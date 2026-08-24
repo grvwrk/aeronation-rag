@@ -16,5 +16,9 @@ The command writes:
     retrieval/fallback signals, token usage, cost, and per-request details.
 - `reports/history/` — timestamped aggregate JSON snapshots from each report run.
 
+The real-time report separates local retrieval from fallback requests and cold
+from warm generator setup. This makes latency work easier to evaluate than a
+single mixed average.
+
 Open either generated HTML file directly in a browser. The reports are local
 artifacts and do not send data to an external analytics service.
