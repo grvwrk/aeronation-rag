@@ -19,7 +19,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from evals import EvaluationCase, Prediction, evaluate_case
 
 
-LOG_JSON_PATTERN = re.compile(r"INFO (\{.*\})\s*$")
+LOG_JSON_PATTERN = re.compile(r"(\{.*\})\s*$")
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
