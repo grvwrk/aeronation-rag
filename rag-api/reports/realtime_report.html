@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RAG real-time report</title><style>
+:root { color-scheme: light; --ink:#17202a; --muted:#617080; --line:#d9e0e7; --paper:#f5f7f9; --panel:#fff; --teal:#087f8c; --orange:#d97736; --green:#39824d; }
+* { box-sizing:border-box; } body { margin:0; background:var(--paper); color:var(--ink); font:15px/1.5 Georgia,serif; }
+main { max-width:1240px; margin:auto; padding:42px 24px 64px; } header { border-bottom:1px solid var(--line); padding-bottom:24px; margin-bottom:24px; }
+h1 { font:700 clamp(28px,4vw,46px)/1.05 Georgia,serif; margin:0 0 9px; letter-spacing:0; } h2 { font:700 18px/1.2 Georgia,serif; margin:0 0 16px; }
+.subtitle { color:var(--muted); margin:0; } .kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:12px; margin-bottom:18px; }
+.kpi,.panel { background:var(--panel); border:1px solid var(--line); border-radius:6px; } .kpi { padding:17px; } .kpi span { display:block; color:var(--muted); font:12px/1.2 Arial,sans-serif; text-transform:uppercase; letter-spacing:.04em; }
+.kpi strong { display:block; color:var(--teal); font:700 25px/1.1 Arial,sans-serif; margin-top:9px; } .charts { display:grid; grid-template-columns:repeat(auto-fit,minmax(360px,1fr)); gap:18px; }
+.panel { padding:20px; margin-bottom:18px; } canvas { display:block; width:100%; height:220px; } .table-wrap { overflow-x:auto; } table { width:100%; border-collapse:collapse; font:13px/1.35 Arial,sans-serif; }
+th,td { text-align:left; padding:10px 9px; border-bottom:1px solid var(--line); white-space:nowrap; } th { color:var(--muted); font-size:11px; text-transform:uppercase; }
+@media(max-width:650px) { main { padding:26px 14px 42px; } .charts { grid-template-columns:1fr; } .panel { padding:14px; } }
+</style></head><body><main><header><h1>RAG real-time report</h1><p class="subtitle">Observed request latency, streaming, and token telemetry from local logs</p></header>
+<section class="kpis"><article class="kpi"><span>Latency events</span><strong>0</strong></article><article class="kpi"><span>Token runs</span><strong>0</strong></article><article class="kpi"><span>Stream chunks</span><strong>0</strong></article><article class="kpi"><span>Avg stage latency (ms)</span><strong>0.0</strong></article><article class="kpi"><span>P95 stage latency (ms)</span><strong>0.0</strong></article><article class="kpi"><span>Avg total tokens</span><strong>0.0</strong></article><article class="kpi"><span>Avg TTFT (ms)</span><strong>0.0</strong></article><article class="kpi"><span>P95 TTFT (ms)</span><strong>0.0</strong></article><article class="kpi"><span>Avg output tok/s</span><strong>0.0</strong></article></section><section class="charts"><section class="panel"><h2>Average latency by stage (ms)</h2><canvas id="stages" height="220"></canvas></section><section class="panel"><h2>Average token and generation telemetry</h2><canvas id="tokens" height="220"></canvas></section></section></main>
+<script>
+const charts=[{"id":"stages","title":"Average latency by stage (ms)","labels":[],"values":[],"color":"#087f8c"},{"id":"tokens","title":"Average token and generation telemetry","labels":["input","output","total","tok/s","generation ms","TTFT ms"],"values":[0.0,0.0,0.0,0.0,0.0,0.0],"color":"#d97736"}];
+function draw(chart) { const canvas=document.getElementById(chart.id), ctx=canvas.getContext('2d');
+  const dpr=window.devicePixelRatio||1, width=canvas.clientWidth, height=220; canvas.width=width*dpr; canvas.height=height*dpr; ctx.scale(dpr,dpr);
+  const pad={left:42,right:12,top:15,bottom:42}, plotW=width-pad.left-pad.right, plotH=height-pad.top-pad.bottom;
+  const max=Math.max(...chart.values,1), step=plotW/Math.max(chart.values.length,1); ctx.font='11px Arial'; ctx.fillStyle='#617080'; ctx.strokeStyle='#d9e0e7';
+  [0,.5,1].forEach(t=>{const y=pad.top+plotH*(1-t);ctx.beginPath();ctx.moveTo(pad.left,y);ctx.lineTo(width-pad.right,y);ctx.stroke();ctx.fillText((max*t).toFixed(0),4,y+4);});
+  chart.values.forEach((value,i)=>{const barW=Math.max(12,step*.58), x=pad.left+i*step+(step-barW)/2, h=plotH*value/max, y=pad.top+plotH-h;ctx.fillStyle=chart.color;ctx.fillRect(x,y,barW,h);ctx.fillStyle='#17202a';ctx.save();ctx.translate(x+barW/2,height-pad.bottom+14);ctx.rotate(-.35);ctx.textAlign='center';ctx.fillText(String(chart.labels[i]).slice(0,22),0,0);ctx.restore();ctx.fillText(String(value),x+barW/2-12,y-5);});
+}
+charts.forEach(draw); window.addEventListener('resize',()=>charts.forEach(draw));
+</script></body></html>
