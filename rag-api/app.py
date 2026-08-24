@@ -528,10 +528,18 @@ async def get_answer(rag: RAG, background_tasks: BackgroundTasks) -> StreamingRe
             app_manager.prompts.profanity_filter.format(query=rag.query), max_tokens=32
         )
         rephrase_started = time.perf_counter()
-        rephrase_call = app_manager.llm.acomplete(
-            app_manager.prompts.rephrased_query.format(query=rag.query), max_tokens=64
+        enable_rephrase = app_manager.settings.config.get("RAG_ENABLE_QUERY_REPHRASE", True)
+        rephrase_call = (
+            app_manager.llm.acomplete(
+                app_manager.prompts.rephrased_query.format(query=rag.query), max_tokens=64
+            )
+            if enable_rephrase
+            else None
         )
-        profanity_result, rephrase_result = await asyncio.gather(profanity_call, rephrase_call)
+        calls = [profanity_call] + ([rephrase_call] if rephrase_call else [])
+        results = await asyncio.gather(*calls)
+        profanity_result = results[0]
+        rephrase_result = results[1] if enable_rephrase else None
         logger.info("stage=validation duration=%.3fs", time.perf_counter() - validation_started)
         log_latency("validation", time.perf_counter() - validation_started, request_id=request_id, chat_id=rag.chat_id)
         logger.info("stage=rephrase duration=%.3fs", time.perf_counter() - rephrase_started)
@@ -542,7 +550,8 @@ async def get_answer(rag: RAG, background_tasks: BackgroundTasks) -> StreamingRe
                 status_code=status.HTTP_406_NOT_ACCEPTABLE,
                 detail="Sorry, I won't be able to answer your query.",
             )
-        rag.query = rephrase_result.text.strip()
+        if rephrase_result is not None:
+            rag.query = rephrase_result.text.strip()
         logger.info(f"Updated Query: {rag.query}")
 
         # Update metadata

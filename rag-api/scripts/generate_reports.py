@@ -19,7 +19,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from evals import EvaluationCase, Prediction, evaluate_case
 
 
-LOG_JSON_PATTERN = re.compile(r"INFO (\{.*\})\s*$")
+LOG_JSON_PATTERN = re.compile(r"(\{.*\})\s*$")
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -165,6 +165,28 @@ def build_realtime_report(log_dir: Path, output_path: Path) -> dict[str, Any]:
             stage_values.setdefault(str(event["stage"]), []).append(float(event["duration_ms"]))
     latency_values = [value for values in stage_values.values() for value in values]
     request_events = [event for event in latency_events if event.get("event") == "request_complete"]
+    request_by_id = {
+        str(event.get("request_id")): event
+        for event in request_events
+        if event.get("request_id")
+    }
+    retrieval_by_id = {
+        str(event.get("request_id")): event
+        for event in retrieval_events
+        if event.get("request_id")
+    }
+    local_request_ids = {
+        request_id
+        for request_id, event in retrieval_by_id.items()
+        if not event.get("fallback_used")
+    }
+    fallback_request_ids = set(retrieval_by_id) - local_request_ids
+    setup_values_by_request: dict[str, float] = {}
+    for event in latency_events:
+        if event.get("stage") == "generator_setup" and event.get("request_id"):
+            setup_values_by_request[str(event["request_id"])] = float(event["duration_ms"])
+    cold_request_ids = {request_id for request_id, value in setup_values_by_request.items() if value >= 1000}
+    warm_request_ids = set(setup_values_by_request) - cold_request_ids
     token_fields = ["input_tokens_estimate", "output_tokens_estimate", "total_tokens_estimate", "output_tokens_per_second", "generation_duration_ms", "time_to_first_token_ms", "cost_usd"]
     token_averages = {field: _average([float(event[field]) for event in token_events if isinstance(event.get(field), (int, float))]) for field in token_fields}
     charts = [
@@ -172,7 +194,10 @@ def build_realtime_report(log_dir: Path, output_path: Path) -> dict[str, Any]:
         {"id": "tokens", "title": "Average token and generation telemetry", "labels": ["input", "output", "total", "tok/s", "generation ms", "TTFT ms", "cost USD"], "values": [token_averages[field] for field in token_fields], "color": "#d97736"},
         {"id": "retrieval", "title": "Retrieval quality signals", "labels": ["retrieved nodes", "reranked nodes", "fallback rate"], "values": [_average([float(event["retrieved_nodes"]) for event in retrieval_events if isinstance(event.get("retrieved_nodes"), (int, float))]), _average([float(event["reranked_nodes"]) for event in retrieval_events if isinstance(event.get("reranked_nodes"), (int, float))]), _average([1.0 if event.get("fallback_used") else 0.0 for event in retrieval_events])], "color": "#39824d"},
     ]
-    cards = {"Completed requests": len(request_events), "Token runs": len(token_events), "Stream chunks": len(stream_events), "Retrieval runs": len(retrieval_events), "Avg request latency (ms)": _average([float(event["total_request_latency_ms"]) for event in request_events if isinstance(event.get("total_request_latency_ms"), (int, float))]), "P95 request latency (ms)": _p95([float(event["total_request_latency_ms"]) for event in request_events if isinstance(event.get("total_request_latency_ms"), (int, float))]), "Avg stage latency (ms)": _average(latency_values), "P95 stage latency (ms)": _p95(latency_values), "Avg total tokens": token_averages["total_tokens_estimate"], "Avg TTFT (ms)": token_averages["time_to_first_token_ms"], "P95 TTFT (ms)": _p95([float(event["time_to_first_token_ms"]) for event in token_events if isinstance(event.get("time_to_first_token_ms"), (int, float))]), "Avg output tok/s": token_averages["output_tokens_per_second"], "Avg cost (USD)": token_averages["cost_usd"], "Fallback rate": round(_average([1.0 if event.get("fallback_used") else 0.0 for event in retrieval_events]) * 100, 2)}
+    request_latencies = [float(event["total_request_latency_ms"]) for event in request_events if isinstance(event.get("total_request_latency_ms"), (int, float))]
+    local_latencies = [float(request_by_id[request_id]["total_request_latency_ms"]) for request_id in local_request_ids if request_id in request_by_id and isinstance(request_by_id[request_id].get("total_request_latency_ms"), (int, float))]
+    fallback_latencies = [float(request_by_id[request_id]["total_request_latency_ms"]) for request_id in fallback_request_ids if request_id in request_by_id and isinstance(request_by_id[request_id].get("total_request_latency_ms"), (int, float))]
+    cards = {"Completed requests": len(request_events), "Local retrieval": len(local_request_ids), "Fallback requests": len(fallback_request_ids), "Cold setups": len(cold_request_ids), "Warm setups": len(warm_request_ids), "Token runs": len(token_events), "Stream chunks": len(stream_events), "Retrieval runs": len(retrieval_events), "Avg request latency (ms)": _average(request_latencies), "P95 request latency (ms)": _p95(request_latencies), "Avg local latency (ms)": _average(local_latencies), "Avg fallback latency (ms)": _average(fallback_latencies), "Avg stage latency (ms)": _average(latency_values), "P95 stage latency (ms)": _p95(latency_values), "Avg total tokens": token_averages["total_tokens_estimate"], "Avg TTFT (ms)": token_averages["time_to_first_token_ms"], "P95 TTFT (ms)": _p95([float(event["time_to_first_token_ms"]) for event in token_events if isinstance(event.get("time_to_first_token_ms"), (int, float))]), "Avg output tok/s": token_averages["output_tokens_per_second"], "Avg cost (USD)": token_averages["cost_usd"], "Fallback rate": round(_average([1.0 if event.get("fallback_used") else 0.0 for event in retrieval_events]) * 100, 2)}
     rows = [{"request_id": event.get("request_id", "unknown"), **{field: event.get(field, "") for field in token_fields}} for event in token_events]
     output_path.write_text(_render_dashboard("RAG real-time report", "Observed request latency, streaming, and token telemetry from local logs", cards, charts, rows), encoding="utf-8")
     return {"requests": len(request_events), "token_runs": len(token_events), "retrieval_runs": len(retrieval_events), "token_averages": token_averages, "request_latency": _stats([float(event["total_request_latency_ms"]) for event in request_events if isinstance(event.get("total_request_latency_ms"), (int, float))])}

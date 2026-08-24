@@ -360,6 +360,7 @@ Use the metric pattern to choose where to investigate:
 | Low citation coverage | Citation prompt, source metadata, or context post-processing |
 | High retrieval latency | Qdrant, embeddings, reranker, or network path |
 | High time to first token | LLM request, prompt size, or model cold start |
+| High generator setup latency | Persistence download, index loading, or query-engine construction |
 | High total token count | Prompt history, context size, or generation limits |
 | Low output tokens per second | Provider/model load, streaming path, or local resource limits |
 | Large max inter-chunk delay | Provider streaming pauses or event-loop contention |
@@ -370,6 +371,38 @@ Change one important variable at a time, rerun the same eval set, and compare
 the generated report. A quality improvement that causes a significant latency
 or token regression should be treated as a tradeoff and documented in the
 change description.
+
+## Latency optimizations
+
+The API keeps provider clients, embeddings, the downloaded persistence path,
+and the loaded LlamaIndex index warm inside a worker process. The index cache is
+keyed by resolved persistence directory and collection name. Query engines are
+still created per request so metadata filters and request state cannot leak
+between users.
+
+The first request for a collection is a cold setup. Later requests should reuse
+the index and avoid the expensive persistence/index load path. The real-time
+dashboard reports `Cold setups` and `Warm setups` separately. A setup taking at
+least one second is currently classified as cold for reporting purposes.
+
+Query rephrasing is controlled by `RAG_ENABLE_QUERY_REPHRASE` in
+`config/config.yaml`. It defaults to `false` on this latency branch, while the
+profanity filter remains enabled. Turn it on when chat-history-aware query
+rewriting is required, then compare its latency and quality tradeoff in a live
+run.
+
+After replacing a persistence artifact during the same process, invalidate the
+in-memory caches before querying the new version:
+
+```python
+from generate import Generate, StorageManager
+
+Generate.clear_index_cache("persist", "rag_llm")
+StorageManager.clear_persist_dir_cache("persist", "rag_llm")
+```
+
+If ingestion runs in a separate process, restarting the API worker is the
+simplest way to guarantee that the new artifact is loaded.
 
 ## Contribution checklist
 

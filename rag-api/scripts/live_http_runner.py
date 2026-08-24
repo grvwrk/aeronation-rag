@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from pathlib import Path
 from typing import Any
 
 import requests
@@ -31,6 +32,23 @@ def _decode_events(line: str) -> list[dict[str, Any]]:
         events.append(payload)
         offset = end
     return events
+
+
+def _latest_log_event(filename: str, event_name: str) -> dict[str, Any]:
+    path = Path(__file__).resolve().parent.parent / "logs" / filename
+    if not path.exists():
+        return {}
+    for line in reversed(path.read_text(encoding="utf-8").splitlines()):
+        start = line.find("{")
+        if start < 0:
+            continue
+        try:
+            event = json.loads(line[start:])
+        except json.JSONDecodeError:
+            continue
+        if event.get("event") == event_name:
+            return event
+    return {}
 
 
 def run_case(case: EvaluationCase) -> Prediction:
@@ -77,11 +95,19 @@ def run_case(case: EvaluationCase) -> Prediction:
     answer = "".join(answer_parts)
     input_tokens = _estimate_tokens(case.query)
     output_tokens = _estimate_tokens(answer)
+    retrieval = _latest_log_event("retrieval.log", "retrieval_result")
+    request_complete = _latest_log_event("latency.log", "request_complete")
+    request_id = request_complete.get("request_id") or retrieval.get("request_id")
     return Prediction(
         answer=answer,
         contexts=tuple(contexts),
         citations=tuple(dict.fromkeys(citations)),
         fallback_used=not contexts and not citations,
+        request_id=request_id,
+        retrieved_context_ids=tuple(retrieval.get("retrieved_context_ids", ())),
+        retrieved_scores=tuple(float(score) for score in retrieval.get("retrieved_scores", ())),
+        retrieved_nodes=retrieval.get("retrieved_nodes"),
+        reranked_nodes=retrieval.get("reranked_nodes"),
         latency_ms=latency_ms,
         time_to_first_token_ms=first_token_ms,
         generation_duration_ms=latency_ms,
