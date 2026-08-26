@@ -460,7 +460,12 @@ class Generate:
                     aclient=self._async_qdrant_client,
                     collection_name=collection_name,
                     enable_hybrid=self._config["QDRANT_ENABLE_HYBRID"],
-                    fastembed_sparse_model=self._config["FASTEMBED_SPARSE_MODEL"],
+                    fastembed_sparse_model=(
+                        self._config["FASTEMBED_SPARSE_MODEL"]
+                        if self._config["QDRANT_ENABLE_HYBRID"]
+                        else None
+                    ),
+                    dense_vector_name="text-dense",
                     fastembed_cache_dir=abs_cache_dir,
                     prefer_grpc=False,
                     batch_size=16
@@ -535,8 +540,8 @@ class Generate:
                     self._prompts.citation_template + self._prompts.refine_template
                 ),
                 similarity_top_k=self._config["RAG_SIMILARITY_TOP_K"],
-                # Cohere is deliberately invoked only when retrieval yields >2 nodes.
-                node_postprocessors=[self._reranker, sim_processor],
+                # Filter on Qdrant similarity before Cohere replaces node scores.
+                node_postprocessors=[sim_processor, self._reranker],
                 filters=MetadataFilters(filters=metadata_filters or []),
                 llm=Settings.llm,
                 streaming=self._config["RAG_STREAMING"],

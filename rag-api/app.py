@@ -276,6 +276,7 @@ class AppManager:
     _qdrant_client = None
     _async_qdrant_client = None
     _reranker = None
+    _storage_manager = None
 
     def __init__(self):
         self._settings = None
@@ -289,6 +290,7 @@ class AppManager:
         self._qdrant_client = None
         self._async_qdrant_client = None
         self._reranker = None
+        self._storage_manager = None
 
     def is_ready(self) -> bool:
         return self._initialized
@@ -333,6 +335,9 @@ class AppManager:
             )
             self._llm = await asyncio.to_thread(
                 LLMManager.init_llm, self._settings.config, self._settings.secret
+            )
+            self._storage_manager = await asyncio.to_thread(
+                StorageManager, self._settings.config, self._settings.secret
             )
             from llama_index.core import Settings as LlamaSettings
             from llama_index.embeddings.fastembed import FastEmbedEmbedding
@@ -442,10 +447,17 @@ class AppManager:
     def reranker(self):
         return self._reranker
 
+    @property
+    def storage_manager(self):
+        if self._storage_manager is None:
+            self.initialize()
+        return self._storage_manager
+
 
 @asynccontextmanager
 async def lifespan(app):
     try:
+        await app_manager.wait_until_ready()
         yield
     finally:
         logger.info("Shutting down application")
@@ -561,7 +573,7 @@ async def get_answer(rag: RAG, background_tasks: BackgroundTasks) -> StreamingRe
 
         # Initialize storage manager and response generator
         logger.debug("Initializing response generator")
-        s3_manager = StorageManager(app_manager.settings.config, app_manager.settings.secret)
+        s3_manager = app_manager.storage_manager
 
         generator_started = time.perf_counter()
         generate_obj = await Generate.create(

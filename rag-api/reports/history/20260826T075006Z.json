@@ -1,0 +1,47 @@
+{
+  "generated_at": "20260826T075006Z",
+  "evals": {
+    "cases": 2,
+    "passed": 0,
+    "averages": {
+      "answer_correctness": 0.19,
+      "citation_coverage": 0.5,
+      "context_recall": 0.0,
+      "generation_duration_ms": 6921.36,
+      "groundedness": 0.04,
+      "input_tokens_estimate": 9.0,
+      "latency_ms": 6921.36,
+      "output_tokens_estimate": 64.0,
+      "output_tokens_per_second": 23.29,
+      "reranked_nodes": 2.0,
+      "retrieval_mrr": 0.0,
+      "retrieval_precision_at_k": 0.0,
+      "retrieval_recall_at_k": 0.0,
+      "retrieval_score_average": 0.52,
+      "retrieval_score_minimum": 0.52,
+      "retrieved_nodes": 2.0,
+      "time_to_first_token_ms": 6921.34,
+      "token_chunks": 1.0,
+      "total_tokens_estimate": 73.0
+    }
+  },
+  "realtime": {
+    "requests": 2,
+    "token_runs": 2,
+    "retrieval_runs": 2,
+    "token_averages": {
+      "input_tokens_estimate": 135.5,
+      "output_tokens_estimate": 94.5,
+      "total_tokens_estimate": 230.0,
+      "output_tokens_per_second": 88.97,
+      "generation_duration_ms": 1027.49,
+      "time_to_first_token_ms": 1021.29,
+      "cost_usd": 0.0
+    },
+    "request_latency": {
+      "average": 6901.18,
+      "p95": 11609.93,
+      "count": 2
+    }
+  }
+}
