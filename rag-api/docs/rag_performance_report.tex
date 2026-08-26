@@ -1,0 +1,199 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{microtype}
+\usepackage{xcolor}
+\usepackage{hyperref}
+
+\definecolor{ink}{HTML}{17202A}
+\definecolor{accent}{HTML}{087F8C}
+\definecolor{muted}{HTML}{617080}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=accent,
+  urlcolor=accent,
+  pdftitle={RAG Performance Report},
+  pdfauthor={RAG API Evaluation}
+}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{6pt}
+\renewcommand{\arraystretch}{1.2}
+
+\title{\textbf{RAG Performance Report}}
+\author{RAG API Evaluation}
+\date{26 August 2026}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This report evaluates the RAG application against the two papers currently represented in the vector database: the FSDP paper and the vLLM paper. The application completed two live requests. Qdrant retrieval was available and returned two nodes per request, but answer grounding and expected-context alignment remained weak. The report therefore distinguishes system performance from answer-quality performance.
+\end{abstract}
+
+\section{Scope and Method}
+
+The evaluation used only the questions in \texttt{evals/dataset.jsonl}:
+
+\begin{enumerate}
+  \item How does FSDP reduce memory usage during a forward pass?
+  \item What problem does PagedAttention solve in LLM serving?
+\end{enumerate}
+
+Each question was sent once through the streaming endpoint \texttt{/v1/chat}. Runtime telemetry was collected from the local structured logs for request latency, retrieval latency, time to first token, generation duration, token usage, and streaming behavior. The measurements below are from the clean two-request run at 13:19 UTC on 26 August 2026.
+
+\section{System Configuration}
+
+\begin{table}[ht]
+\centering
+\caption{Configuration relevant to retrieval and generation.}
+\begin{tabular}{ll}
+\toprule
+\textbf{Setting} & \textbf{Value} \\
+\midrule
+Embedding model & \texttt{sentence-transformers/all-MiniLM-L6-v2} \\
+Embedding maximum length & 512 tokens \\
+Qdrant collection & \texttt{rag\_llm} \\
+Qdrant retrieval mode & Dense-only \\
+Dense vector name & \texttt{text-dense} \\
+Similarity top-$k$ & 3 \\
+Similarity cutoff & 0.50 \\
+Reranker & \texttt{rerank-v4.0-fast} \\
+Reranked top-$n$ & 3 \\
+LLM & \texttt{openai/gpt-oss-20b} via Groq \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The Qdrant collection was independently verified as healthy: status \texttt{green}, 1,093 points, and a 384-dimensional cosine vector named \texttt{text-dense}. Dense-only mode is required because this collection does not contain a sparse vector.
+
+\section{Aggregate Results}
+
+\begin{table}[ht]
+\centering
+\caption{Aggregate results for the two live requests.}
+\begin{tabular}{lr}
+\toprule
+\textbf{Metric} & \textbf{Result} \\
+\midrule
+Completed requests & 2 \\
+Retrieval runs & 2 \\
+Token runs & 2 \\
+Retrieved nodes per request & 2.0 \\
+Reranked nodes per request & 2.0 \\
+Average request latency & 6,901.18 ms \\
+P95 request latency & 11,609.93 ms \\
+Average retrieval latency & 939.96 ms \\
+Average time to first token & 1,021.29 ms \\
+Average generation duration & 1,027.49 ms \\
+Average output speed & 88.97 tokens/s \\
+Average total tokens & 230.0 \\
+Average input tokens & 135.5 \\
+Average output tokens & 94.5 \\
+Average retrieval score & 0.52 \\
+Average retrieval score minimum & 0.52 \\
+Fallback rate & 0\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The large difference between request latency and generation duration is primarily request preparation and generator setup overhead. The application contacted Qdrant and completed both requests without a retrieval transport failure or fallback.
+
+\section{Stage-Level Runtime Measurements}
+
+\begin{table}[ht]
+\centering
+\caption{Per-request latency measurements from \texttt{logs/latency.log}.}
+\begin{tabular}{lrrr}
+\toprule
+\textbf{Stage} & \textbf{FSDP (ms)} & \textbf{PagedAttention (ms)} & \textbf{Average (ms)} \\
+\midrule
+Validation & 1,028.66 & 530.94 & 779.80 \\
+Query rephrase & 1,028.93 & 531.12 & 780.03 \\
+Generator setup & 2,489.52 & 2.52 & 1,246.02 \\
+Retrieval & 1,511.09 & 368.82 & 939.96 \\
+Generation stream ready & 939.71 & 1,102.60 & 1,021.16 \\
+Time to first token & 939.83 & 1,102.74 & 1,021.29 \\
+Generation end & 951.33 & 1,103.51 & 1,027.42 \\
+Request complete & 11,609.93 & 2,192.42 & 6,901.18 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The FSDP request paid a cold generator-setup cost of 2,489.52 ms, while the PagedAttention request reused the warmed setup in 2.52 ms. Retrieval itself was also slower for the FSDP request, at 1,511.09 ms versus 368.82 ms.
+
+\section{Token and Streaming Measurements}
+
+\begin{table}[ht]
+\centering
+\caption{Per-request token measurements from \texttt{logs/query\_token\_usage.log}.}
+\begin{tabular}{lrrr}
+\toprule
+\textbf{Metric} & \textbf{FSDP} & \textbf{PagedAttention} & \textbf{Average} \\
+\midrule
+Input tokens & 136 & 135 & 135.5 \\
+Output tokens & 46 & 143 & 94.5 \\
+Total tokens & 182 & 278 & 230.0 \\
+Time to first token & 939.83 ms & 1,102.74 ms & 1,021.29 ms \\
+Generation duration & 951.41 ms & 1,103.58 ms & 1,027.49 ms \\
+Output throughput & 48.35 tokens/s & 129.58 tokens/s & 88.97 tokens/s \\
+Token chunks & 1 & 1 & 1 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Per-Query Results}
+
+\small
+\begin{longtable}{>{\raggedright\arraybackslash}p{0.25\textwidth}rrrrrrr}
+\caption{Per-query live evaluation results.}\\
+\toprule
+\textbf{Query} & \textbf{Nodes} & \textbf{Score} & \textbf{Retrieval (ms)} & \textbf{TTFT (ms)} & \textbf{Latency (ms)} & \textbf{Tok/s} & \textbf{Citation} \\
+\midrule
+\endfirsthead
+\toprule
+\textbf{Query} & \textbf{Nodes} & \textbf{Score} & \textbf{Retrieval (ms)} & \textbf{TTFT (ms)} & \textbf{Latency (ms)} & \textbf{Tok/s} & \textbf{Citation} \\
+\midrule
+\endhead
+FSDP forward-pass memory & 2 & 0.52 & 1,511.09 & 939.83 & 11,609.93 & 48.35 & No \\
+PagedAttention in LLM serving & 2 & 0.52 & 368.82 & 1,102.74 & 2,192.42 & 129.58 & Yes \\
+\bottomrule
+\end{longtable}
+\normalsize
+
+Both queries retrieved nodes, but the live runner recorded zero expected-context recall and zero retrieval precision/recall against the dataset labels. The retrieved node identifiers did not match the expected identifiers in the evaluation fixture. The PagedAttention response cited \texttt{2309.06180v1.pdf}; the FSDP response did not provide a citation in the captured answer.
+
+\section{Findings}
+
+\subsection{Resolved Infrastructure Issue}
+The original empty-retrieval behavior was caused by a configuration mismatch. The application passed a sparse BM42 model to \texttt{QdrantVectorStore}; that library enables hybrid retrieval whenever a sparse model is supplied, even when the explicit hybrid flag is false. The existing \texttt{rag\_llm} collection is dense-only. The application was corrected to disable hybrid retrieval, pass no sparse model in dense-only mode, and explicitly select \texttt{text-dense}.
+
+\subsection{Current Quality Limitation}
+After the retrieval correction, Qdrant returned nodes for both supported questions. However, the returned chunks were not consistently the chunks expected by the dataset, and the captured context payload was incomplete for evaluation. Consequently, retrieval availability improved, while groundedness and context-recall scores remained low.
+
+\subsection{Performance Limitation}
+Average end-to-end latency was 6.90 seconds, with a P95 of 11.61 seconds. Average generation itself took 1.03 seconds, indicating that model and retrieval setup, query preparation, and application initialization account for a substantial portion of the request time.
+
+\section{Recommendations}
+
+\begin{enumerate}
+  \item Keep \texttt{QDRANT\_ENABLE\_HYBRID=false} unless sparse vectors are added to the collection.
+  \item Align the dataset's expected chunk identifiers with the chunks produced by the current ingestion and persistence version.
+  \item Ensure the streaming adapter captures the API's context event and maps its text and metadata into \texttt{Prediction.contexts}.
+  \item Re-run the two-query benchmark after the expected chunk IDs and context-event parsing are aligned.
+  \item Reduce repeated per-request index/persistence initialization through a warmed application process before measuring production latency.
+  \item Upgrade the Qdrant Python client to a version compatible with the Qdrant server, which was reported as version 1.18.3 while the environment used client version 1.15.1.
+\end{enumerate}
+
+\section{Conclusion}
+
+The RAG service can now connect to the configured Qdrant instance and retrieve indexed nodes for the FSDP and vLLM/PagedAttention topics. The clean runtime run completed exactly two supported requests and produced usable latency and token telemetry. The next quality milestone is to align retrieved chunk identifiers and context extraction with the evaluation contract; until that is done, the answer-quality results should not be interpreted as a reliable measure of the underlying vector database quality.
+
+\end{document}
